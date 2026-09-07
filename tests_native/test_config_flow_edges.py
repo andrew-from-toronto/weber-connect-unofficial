@@ -69,7 +69,9 @@ def test_weber_detection_and_discovery_labels_cover_adapter_and_proxy_paths(hass
     instance = flow(hass)
     assert _is_weber(SimpleNamespace(manufacturer_data={0x0DF2: b"x"}, name="Unknown"))
     assert _is_weber(SimpleNamespace(manufacturer_data={}, name="Weber Connect Hub"))
+    assert _is_weber(SimpleNamespace(manufacturer_data={}, name="SmokeFire 1234"))
     assert not _is_weber(SimpleNamespace(manufacturer_data={}, name="June Oven"))
+    assert not _is_weber(SimpleNamespace(manufacturer_data={}, name="SmokeFireplace"))
     assert not _is_weber(SimpleNamespace(manufacturer_data={}, name="Connect headphones"))
     assert not _is_weber(SimpleNamespace(manufacturer_data={}, name="Other"))
 

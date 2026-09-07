@@ -13,6 +13,10 @@
     {
       "connectable": true,
       "local_name": "WEBER*"
+    },
+    {
+      "connectable": true,
+      "local_name": "SmokeFire*"
     }
   ],
   "codeowners": ["@ProspectOre"],

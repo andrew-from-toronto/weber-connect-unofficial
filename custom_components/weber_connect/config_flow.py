@@ -44,7 +44,7 @@ _CLOUD_ASSOCIATION_POLL_INTERVAL = 10.0
 _CLOUD_PROGRESS_REFRESH_INTERVAL = 1.0
 _CLOUD_REQUEST_TIMEOUT = 5.0
 _WEBER_NAME_RE = re.compile(
-    r"^(?:weber(?: connect| smart| grill)?|connect hub)(?:\b|[-_ ])",
+    r"^(?:weber(?: connect| smart| grill)?|connect hub|smokefire)(?:\b|[-_ ])",
     re.IGNORECASE,
 )
 

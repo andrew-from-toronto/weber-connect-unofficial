@@ -51,6 +51,10 @@ def test_manifest_and_hacs_contract() -> None:
         0x0DF2,
         0x07C5,
     }
+    assert {row.get("local_name") for row in manifest["bluetooth"]} >= {
+        "WEBER*",
+        "SmokeFire*",
+    }
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["name"] == NAME == "Weber Connect Unofficial"
     assert hacs["name"] == NAME
@@ -89,6 +93,7 @@ def test_private_identity_has_official_companion_shape() -> None:
 def test_weber_discovery_matches_company_ids_and_names() -> None:
     assert _is_weber(SimpleNamespace(manufacturer_data={0x0DF2: b"x"}, name="Hub"))
     assert _is_weber(SimpleNamespace(manufacturer_data={}, name="Weber Connect"))
+    assert _is_weber(SimpleNamespace(manufacturer_data={}, name="SmokeFire 1234"))
     assert not _is_weber(SimpleNamespace(manufacturer_data={1: b"x"}, name="Speaker"))
 
 
