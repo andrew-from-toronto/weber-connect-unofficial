@@ -61,6 +61,19 @@ async def async_get_config_entry_diagnostics(
         "fuel_level": state.get("fuel_level"),
         "software_version": state.get("software_version"),
         "hardware_version": state.get("hardware_version"),
+        # A compatibility report is mostly guesswork without the limits the
+        # appliance reported for itself. The SKU is a model, not an identifier.
+        "capabilities": {
+            "sku": state.get("sku"),
+            "capability_bits": state.get("capability_bits"),
+            "supported_cook_modes": state.get("supported_cook_modes"),
+            "target_min_c": state.get("target_min_temperature"),
+            "target_max_c": state.get("target_max_temperature"),
+            "target_step_c": state.get("target_step"),
+            "supports_ignition_request": state.get("supports_ignition_request"),
+            "supports_shutdown": state.get("supports_shutdown"),
+            "requires_target_on_device_first": state.get("requires_target_on_device_first"),
+        },
         "probe_slots": [
             {
                 "number": number,

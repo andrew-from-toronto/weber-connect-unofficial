@@ -13,10 +13,10 @@ from .entity import WeberEntity
 from .models import WeberRuntimeData
 from .saber_frames import COOK_MODE_VALUES, COOK_MODES
 
-# Ordered by the appliance's own byte values so the list reads the same way in
-# every language. "unknown" is offered because an idle appliance reports it, and
-# Home Assistant requires the current option to be selectable.
-COOK_MODE_OPTIONS = [COOK_MODES[value] for value in sorted(COOK_MODES)]
+# Offered only while an appliance has not reported its capability word. Listing
+# every mode is the honest fallback there: the alternative is hiding modes a
+# grill really has because this integration never heard which ones they are.
+ALL_COOK_MODES = [COOK_MODES[value] for value in sorted(COOK_MODES)]
 
 
 async def async_setup_entry(
@@ -45,15 +45,32 @@ class WeberCookModeSelect(WeberEntity, SelectEntity):
     """Choose how an appliance cooks."""
 
     _attr_translation_key = "cook_mode_control"
-    _attr_options = COOK_MODE_OPTIONS
 
     def __init__(self, coordinator: WeberCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "cook_mode_control")
 
     @property
+    def options(self) -> list[str]:
+        """List only the modes the appliance says it can cook in."""
+
+        reported = self.coordinator.data.get("supported_cook_modes")
+        if isinstance(reported, list):
+            supported = [mode for mode in reported if mode in COOK_MODE_VALUES]
+            if supported:
+                return supported
+        return list(ALL_COOK_MODES)
+
+    @property
     def current_option(self) -> str | None:
+        """Report the running mode, or nothing when it is not selectable.
+
+        An idle appliance reports "unknown", which is a state rather than a mode
+        anyone can choose, so it stays out of the option list and reads as no
+        current option instead.
+        """
+
         value = self.coordinator.data.get("cook_mode")
-        return value if isinstance(value, str) and value in COOK_MODE_OPTIONS else None
+        return value if isinstance(value, str) and value in self.options else None
 
     async def async_select_option(self, option: str) -> None:
         """Send the chosen mode, keeping the target the appliance reports.
@@ -63,11 +80,10 @@ class WeberCookModeSelect(WeberEntity, SelectEntity):
         "leave the existing value alone".
         """
 
-        cook_mode_value = COOK_MODE_VALUES.get(option)
-        if cook_mode_value is None:
-            raise HomeAssistantError(f"{option} is not a cook mode this appliance reports.")
+        if option not in self.options:
+            raise HomeAssistantError(f"This appliance does not support the {option} cook mode.")
         target = self.coordinator.data.get("target_grill_temperature")
         target_deci_celsius = (
             round(float(target) * 10) if isinstance(target, (int, float)) else None
         )
-        await self.coordinator.async_set_cook_mode(cook_mode_value, target_deci_celsius)
+        await self.coordinator.async_set_cook_mode(COOK_MODE_VALUES[option], target_deci_celsius)

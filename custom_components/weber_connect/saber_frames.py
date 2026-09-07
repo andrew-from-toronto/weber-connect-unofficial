@@ -330,6 +330,25 @@ COOK_MODES = {
 
 COOK_MODE_VALUES = {name: value for value, name in COOK_MODES.items()}
 
+# Bit positions inside the capabilities frame's capability word. An appliance
+# advertises which modes it can actually cook in, so offering the full table
+# would put controls on a grill that rejects them.
+COOK_MODE_CAPABILITY_BITS = {
+    1: 5,
+    2: 6,
+    3: 7,
+    4: 8,
+    5: 9,
+    6: 10,
+    7: 16,
+    8: 17,
+    9: 18,
+    10: 19,
+}
+SHUTDOWN_CAPABILITY_BIT = 2
+IGNITION_REQUEST_CAPABILITY_BIT = 4
+TARGET_ON_DEVICE_FIRST_CAPABILITY_BIT = 11
+
 CLOUD_CONNECTION_STATES = {
     0: "unknown",
     1: "disconnected",
@@ -685,6 +704,73 @@ def parse_appliance_status_payload(payload: bytes) -> dict[str, Any]:
     if -1 in fields:
         parsed["unparsed_tail_hex"] = bytes_to_hex(fields[-1][-1])
     return parsed
+
+
+def parse_temperature_spec(payload: bytes) -> dict[str, int] | None:
+    """Decode one temperature range the appliance says it accepts."""
+
+    fields = parse_tlv(payload)
+    minimum = _i16(_last(fields, 1))
+    maximum = _i16(_last(fields, 2))
+    default = _i16(_last(fields, 3))
+    step = _u8(_last(fields, 4))
+    spec_id = _u8(_last(fields, 5))
+    if minimum is None or maximum is None or default is None or step is None or spec_id is None:
+        return None
+    return {
+        "id": spec_id,
+        "min_dc": minimum,
+        "max_dc": maximum,
+        "default_dc": default,
+        "step_dc": step,
+    }
+
+
+def parse_appliance_capabilities_payload(payload: bytes) -> dict[str, Any]:
+    """Decode the capabilities frame the app reads before offering controls.
+
+    Every limit a control needs is reported by the appliance itself, so nothing
+    here should be inferred from a model name. A grill that omits a field is
+    saying it has no opinion, which must not become a fabricated limit.
+    """
+
+    fields = parse_tlv(payload)
+    cavity_specs = [
+        spec for raw in fields.get(14, []) if (spec := parse_temperature_spec(raw)) is not None
+    ]
+    probe_specs = [
+        spec for raw in fields.get(13, []) if (spec := parse_temperature_spec(raw)) is not None
+    ]
+    return {
+        "kind": "appliance_capabilities",
+        "sku": _text(_last(fields, 3)),
+        "probe_count": _u8(_last(fields, 1)),
+        "burner_count": _u8(_last(fields, 2)),
+        "capability_bits": _u32(_last(fields, 21)),
+        "cavity_temperature_specs": cavity_specs,
+        "probe_temperature_specs": probe_specs,
+        "max_wireless_probes": _u8(_last(fields, 24)),
+    }
+
+
+def supported_cook_modes(capability_bits: int | None) -> tuple[str, ...]:
+    """Return only the cook modes the appliance advertises."""
+
+    if capability_bits is None:
+        return ()
+    return tuple(
+        COOK_MODES[value]
+        for value, bit in sorted(COOK_MODE_CAPABILITY_BITS.items())
+        if capability_bits & (1 << bit)
+    )
+
+
+def has_capability(capability_bits: int | None, bit: int) -> bool | None:
+    """Return an appliance capability, or None when it reported no word."""
+
+    if capability_bits is None:
+        return None
+    return bool(capability_bits & (1 << bit))
 
 
 def parse_error_payload(payload: bytes) -> dict[str, Any]:

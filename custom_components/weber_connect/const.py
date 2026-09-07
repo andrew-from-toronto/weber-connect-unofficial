@@ -14,6 +14,18 @@ CLOUD_OFFLINE_RETAINED_KEYS: Final = (
     "wifi_connection_status",
     "cloud_connection_status",
     "device_state",
+    # Capabilities describe the hardware rather than the cook. Dropping them
+    # during an outage would quietly widen every control back to its fallback
+    # limits and re-offer modes the appliance cannot cook in.
+    "capability_bits",
+    "supported_cook_modes",
+    "supports_ignition_request",
+    "supports_shutdown",
+    "requires_target_on_device_first",
+    "target_min_temperature",
+    "target_max_temperature",
+    "target_default_temperature",
+    "target_step",
 )
 
 CONF_COMPANION_ID: Final = "companion_id"

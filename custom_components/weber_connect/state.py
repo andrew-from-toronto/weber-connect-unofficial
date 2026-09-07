@@ -5,7 +5,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from .saber_frames import (
+    COOK_MODE_VALUES,
+    IGNITION_REQUEST_CAPABILITY_BIT,
+    SHUTDOWN_CAPABILITY_BIT,
+    TARGET_ON_DEVICE_FIRST_CAPABILITY_BIT,
+    has_capability,
+    supported_cook_modes,
+)
+
 ACTIVE_SESSION_STATES = {"PRIMED", "READY", "ACTIVE", "PAUSED", "ACTIVE_FIXED", "PREHEAT"}
+_SPEC_FIELDS = ("id", "min_dc", "max_dc", "default_dc", "step_dc")
 
 
 def _utc_now() -> str:
@@ -32,6 +42,41 @@ def _intensity(value: Any) -> int | None:
 
 def _text(value: Any) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _cavity_spec(specs: Any, cook_mode: Any) -> dict[str, int] | None:
+    """Return the range covering the current mode, or the widest reported one.
+
+    An appliance reports one cavity range per cook mode it supports. Falling
+    back to the widest range keeps the control usable while a grill is idle and
+    reporting no mode, rather than presenting limits belonging to another mode.
+    """
+
+    rows: list[dict[str, int]] = []
+    for row in specs if isinstance(specs, list) else []:
+        if isinstance(row, dict) and all(type(row.get(field)) is int for field in _SPEC_FIELDS):
+            rows.append({field: int(row[field]) for field in _SPEC_FIELDS})
+    if not rows:
+        return None
+    mode_value = COOK_MODE_VALUES.get(cook_mode) if isinstance(cook_mode, str) else None
+    for row in rows:
+        if row["id"] == mode_value:
+            return row
+    return {
+        "id": -1,
+        "min_dc": min(row["min_dc"] for row in rows),
+        "max_dc": max(row["max_dc"] for row in rows),
+        "default_dc": rows[0]["default_dc"],
+        "step_dc": min(row["step_dc"] for row in rows),
+    }
+
+
+def _spec_celsius(spec: dict[str, int] | None, key: str) -> float | None:
+    """Convert one deci-Celsius field of a reported range to Celsius."""
+
+    if spec is None:
+        return None
+    return round(spec[key] / 10.0, 1)
 
 
 def normalize_state(
@@ -166,6 +211,25 @@ def normalize_state(
         state[f"burner_{number}_locked"] = (
             row.get("locked") if type(row.get("locked")) is bool else None
         )
+
+    capability_bits = raw.get("capability_bits")
+    if type(capability_bits) is not int:
+        capability_bits = None
+    state["capability_bits"] = capability_bits
+    state["sku"] = _text(raw.get("sku"))
+    state["supported_cook_modes"] = list(supported_cook_modes(capability_bits))
+    state["supports_ignition_request"] = has_capability(
+        capability_bits, IGNITION_REQUEST_CAPABILITY_BIT
+    )
+    state["supports_shutdown"] = has_capability(capability_bits, SHUTDOWN_CAPABILITY_BIT)
+    state["requires_target_on_device_first"] = has_capability(
+        capability_bits, TARGET_ON_DEVICE_FIRST_CAPABILITY_BIT
+    )
+    cavity_spec = _cavity_spec(raw.get("cavity_temperature_specs"), state["cook_mode"])
+    state["target_min_temperature"] = _spec_celsius(cavity_spec, "min_dc")
+    state["target_max_temperature"] = _spec_celsius(cavity_spec, "max_dc")
+    state["target_default_temperature"] = _spec_celsius(cavity_spec, "default_dc")
+    state["target_step"] = _spec_celsius(cavity_spec, "step_dc")
 
     all_session_states = [
         row.get("state")

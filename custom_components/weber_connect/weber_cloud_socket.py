@@ -16,7 +16,11 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from .const import CLOUD_OFFLINE_RETAINED_KEYS
-from .saber_frames import parse_appliance_status_payload, parse_cook_session_status_payload
+from .saber_frames import (
+    parse_appliance_capabilities_payload,
+    parse_appliance_status_payload,
+    parse_cook_session_status_payload,
+)
 from .weber_cloud import WeberCloudAuthError
 
 LOGGER = logging.getLogger(__name__)
@@ -133,6 +137,7 @@ class WeberCloudSession:
         self.socket_connections = 0
         self.fast_recoveries = 0
         self._appliance_status: dict[str, Any] = {}
+        self._capabilities: dict[str, Any] = {}
 
     def _next_sequence(self) -> int:
         value = self._sequence
@@ -292,6 +297,19 @@ class WeberCloudSession:
                         }
                     )
                     continue
+                if message.type_value == 0x88:
+                    # Capabilities describe the hardware, not the cook, so they
+                    # are requested once per subscription and kept across
+                    # reconnects. Losing them would silently widen every control
+                    # back to "no limits reported".
+                    self._capabilities = {
+                        key: value
+                        for key, value in parse_appliance_capabilities_payload(
+                            message.payload
+                        ).items()
+                        if key != "kind"
+                    }
+                    continue
                 if message.type_value == 0x80:
                     cook_status = parse_cook_session_status_payload(message.payload)
                     return {
@@ -301,6 +319,7 @@ class WeberCloudSession:
                             for key, value in self._appliance_status.items()
                             if key != "kind"
                         },
+                        **self._capabilities,
                     }
 
     async def async_request_status(self) -> dict[str, Any]:

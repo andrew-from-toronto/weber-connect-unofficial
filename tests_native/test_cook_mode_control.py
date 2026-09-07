@@ -27,14 +27,17 @@ from custom_components.weber_connect.saber_frames import (
     COOK_MODE_VALUES,
     COOK_MODES,
     build_set_cook_mode_body,
+    parse_appliance_capabilities_payload,
+    supported_cook_modes,
 )
 from custom_components.weber_connect.select import (
-    COOK_MODE_OPTIONS,
+    ALL_COOK_MODES,
     WeberCookModeSelect,
 )
 from custom_components.weber_connect.select import (
     async_setup_entry as async_setup_select,
 )
+from custom_components.weber_connect.state import normalize_state
 
 DEVICE_ID = "11" * 16
 APPLIANCE_ID = "22" * 16
@@ -74,7 +77,7 @@ def test_cook_modes_cover_every_mode_the_appliance_can_report() -> None:
     assert COOK_MODES[12] == "clean"
     assert COOK_MODE_VALUES["grill"] == 1
     assert COOK_MODE_VALUES["smoke_boost"] == 2
-    assert set(COOK_MODE_OPTIONS) == set(COOK_MODES.values())
+    assert set(ALL_COOK_MODES) == set(COOK_MODES.values())
 
 
 class FakeHass:
@@ -284,6 +287,208 @@ async def test_cook_mode_control_rejects_an_option_the_appliance_cannot_report(
     coordinator = _fake_coordinator({"cook_mode": "grill"})
     select = WeberCookModeSelect(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
 
-    with pytest.raises(HomeAssistantError, match="not a cook mode"):
+    with pytest.raises(HomeAssistantError, match="does not support"):
         await select.async_select_option("rotisserie")
     coordinator.async_set_cook_mode.assert_not_awaited()
+
+
+def tlv(tag: int, value: bytes) -> bytes:
+    return bytes([tag, len(value)]) + value
+
+
+def spec(spec_id: int, min_dc: int, max_dc: int, default_dc: int, step_dc: int) -> bytes:
+    return (
+        tlv(1, min_dc.to_bytes(2, "little", signed=True))
+        + tlv(2, max_dc.to_bytes(2, "little", signed=True))
+        + tlv(3, default_dc.to_bytes(2, "little", signed=True))
+        + tlv(4, bytes([step_dc]))
+        + tlv(5, bytes([spec_id]))
+    )
+
+
+# Bits 5 and 6: grill and smoke boost, the two modes a SmokeFire cooks in.
+SMOKEFIRE_BITS = (1 << 5) | (1 << 6)
+CAPABILITIES = (
+    tlv(1, bytes([4]))
+    + tlv(2, bytes([0]))
+    + tlv(3, b"SMOKEFIRE-EX4")
+    + tlv(21, SMOKEFIRE_BITS.to_bytes(4, "little"))
+    + tlv(14, spec(1, 930, 3160, 1770, 5))
+    + tlv(14, spec(2, 820, 1600, 820, 5))
+    + tlv(13, spec(0, 0, 1000, 600, 5))
+    + tlv(24, bytes([2]))
+)
+
+
+def test_capabilities_frame_reports_probes_modes_and_ranges() -> None:
+    parsed = parse_appliance_capabilities_payload(CAPABILITIES)
+    assert parsed["sku"] == "SMOKEFIRE-EX4"
+    assert parsed["probe_count"] == 4
+    assert parsed["max_wireless_probes"] == 2
+    assert parsed["capability_bits"] == SMOKEFIRE_BITS
+    assert [row["id"] for row in parsed["cavity_temperature_specs"]] == [1, 2]
+    assert parsed["cavity_temperature_specs"][0] == {
+        "id": 1,
+        "min_dc": 930,
+        "max_dc": 3160,
+        "default_dc": 1770,
+        "step_dc": 5,
+    }
+    assert len(parsed["probe_temperature_specs"]) == 1
+
+
+def test_a_truncated_specification_is_dropped_rather_than_half_read() -> None:
+    """A partial range must never become a limit a control enforces."""
+
+    parsed = parse_appliance_capabilities_payload(tlv(14, tlv(1, b"\x01\x02")))
+    assert parsed["cavity_temperature_specs"] == []
+    assert parsed["capability_bits"] is None
+
+
+def test_supported_cook_modes_follow_the_capability_word() -> None:
+    assert supported_cook_modes(SMOKEFIRE_BITS) == ("grill", "smoke_boost")
+    assert supported_cook_modes(None) == ()
+    assert supported_cook_modes(0) == ()
+
+
+def test_state_exposes_the_range_belonging_to_the_running_mode() -> None:
+    state = normalize_state(
+        {"cook_mode": "smoke_boost", **parse_appliance_capabilities_payload(CAPABILITIES)},
+        source="cloud",
+        connected=True,
+    )
+    assert state["supported_cook_modes"] == ["grill", "smoke_boost"]
+    assert state["target_min_temperature"] == 82.0
+    assert state["target_max_temperature"] == 160.0
+    assert state["supports_ignition_request"] is False
+    assert state["requires_target_on_device_first"] is False
+
+
+def test_state_widens_to_every_range_while_no_mode_is_running() -> None:
+    """An idle grill must not inherit the limits of an arbitrary mode."""
+
+    state = normalize_state(
+        parse_appliance_capabilities_payload(CAPABILITIES),
+        source="cloud",
+        connected=True,
+    )
+    assert state["target_min_temperature"] == 82.0
+    assert state["target_max_temperature"] == 316.0
+
+
+def test_state_reports_no_limits_when_the_appliance_sends_no_capabilities() -> None:
+    state = normalize_state({"cook_mode": "grill"}, source="cloud", connected=True)
+    assert state["supported_cook_modes"] == []
+    assert state["target_min_temperature"] is None
+    assert state["supports_ignition_request"] is None
+
+
+async def test_target_control_uses_the_reported_range(hass: object) -> None:
+    coordinator = _fake_coordinator(
+        {
+            "target_grill_temperature": 82.2,
+            "cook_mode": "smoke_boost",
+            "target_min_temperature": 82.0,
+            "target_max_temperature": 160.0,
+            "target_step": 0.5,
+        }
+    )
+    number = WeberTargetTemperatureNumber(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
+
+    assert number.native_min_value == 82.0
+    assert number.native_max_value == 160.0
+    assert number.native_step == 0.5
+
+    with pytest.raises(HomeAssistantError, match="outside"):
+        await number.async_set_native_value(200.0)
+    coordinator.async_set_cook_mode.assert_not_awaited()
+
+
+async def test_target_control_falls_back_when_no_range_is_reported(hass: object) -> None:
+    coordinator = _fake_coordinator(
+        {"target_grill_temperature": 82.2, "cook_mode": "grill", "target_step": 0}
+    )
+    number = WeberTargetTemperatureNumber(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
+
+    assert number.native_min_value == 30.0
+    assert number.native_max_value == 320.0
+    # A reported step of zero is unusable as an increment.
+    assert number.native_step == 1.0
+
+
+async def test_target_control_honours_set_on_device_first(hass: object) -> None:
+    coordinator = _fake_coordinator(
+        {
+            "target_grill_temperature": None,
+            "cook_mode": "grill",
+            "requires_target_on_device_first": True,
+        }
+    )
+    number = WeberTargetTemperatureNumber(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
+
+    with pytest.raises(HomeAssistantError, match="on the grill"):
+        await number.async_set_native_value(120.0)
+    coordinator.async_set_cook_mode.assert_not_awaited()
+
+
+async def test_cook_mode_control_offers_only_supported_modes(hass: object) -> None:
+    coordinator = _fake_coordinator(
+        {"cook_mode": "grill", "supported_cook_modes": ["grill", "smoke_boost"]}
+    )
+    select = WeberCookModeSelect(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
+
+    assert select.options == ["grill", "smoke_boost"]
+    with pytest.raises(HomeAssistantError, match="does not support"):
+        await select.async_select_option("sear")
+
+
+@pytest.mark.parametrize("reported", [None, [], ["not-a-mode"]])
+async def test_cook_mode_control_offers_everything_until_capabilities_arrive(
+    hass: object,
+    reported: object,
+) -> None:
+    """Hiding modes because none were reported would lose real grill features."""
+
+    coordinator = _fake_coordinator({"cook_mode": "grill", "supported_cook_modes": reported})
+    select = WeberCookModeSelect(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
+    assert select.options == ALL_COOK_MODES
+
+
+async def test_idle_mode_is_reported_but_not_offered(hass: object) -> None:
+    coordinator = _fake_coordinator(
+        {"cook_mode": "unknown", "supported_cook_modes": ["grill", "smoke_boost"]}
+    )
+    select = WeberCookModeSelect(coordinator, _entity_entry(coordinator))  # type: ignore[arg-type]
+    assert "unknown" not in select.options
+    assert select.current_option is None
+
+
+@pytest.mark.parametrize(
+    "specs",
+    ["not-a-list", [None], [{"id": 1}], [{"id": 1, "min_dc": "cold"}]],
+)
+def test_malformed_ranges_never_become_control_limits(specs: object) -> None:
+    """A half-read range would silently cap a grill below what it can cook."""
+
+    state = normalize_state(
+        {"cook_mode": "grill", "cavity_temperature_specs": specs},
+        source="cloud",
+        connected=True,
+    )
+    assert state["target_min_temperature"] is None
+    assert state["target_max_temperature"] is None
+    assert state["target_step"] is None
+
+
+async def test_capabilities_survive_a_reconnect() -> None:
+    """Hardware facts must outlive the cook status they arrived alongside."""
+
+    session = socket.WeberCloudSession(FakeHass(), FakeCloudClient(), APPLIANCE_ID)  # type: ignore[arg-type]
+    session._capabilities = {"capability_bits": SMOKEFIRE_BITS}
+    session._appliance_status = {"device_state": "active", "cook_mode": "grill"}
+
+    await session._async_close_connection()
+
+    assert session._capabilities == {"capability_bits": SMOKEFIRE_BITS}
+    assert "cook_mode" not in session._appliance_status
+    assert session._appliance_status["device_state"] == "active"

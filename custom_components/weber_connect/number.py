@@ -14,12 +14,12 @@ from .entity import WeberEntity
 from .models import WeberRuntimeData
 from .saber_frames import COOK_MODE_VALUES
 
-# Weber reports a per-model target range only in the appliance capabilities
-# frame, which this integration does not decode. Bound the control widely and
-# let the appliance refuse what it cannot do, rather than inventing limits that
-# would be wrong for some other grill.
-MIN_TARGET_CELSIUS = 30.0
-MAX_TARGET_CELSIUS = 320.0
+# Used only until the appliance reports its own range in the capabilities
+# frame. Wide on purpose: a narrower guess would block a grill this integration
+# has never been run against.
+FALLBACK_MIN_CELSIUS = 30.0
+FALLBACK_MAX_CELSIUS = 320.0
+FALLBACK_STEP_CELSIUS = 1.0
 
 
 async def async_setup_entry(
@@ -50,13 +50,27 @@ class WeberTargetTemperatureNumber(WeberEntity, NumberEntity):
     _attr_translation_key = "target_temperature"
     _attr_device_class = NumberDeviceClass.TEMPERATURE
     _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_native_min_value = MIN_TARGET_CELSIUS
-    _attr_native_max_value = MAX_TARGET_CELSIUS
-    _attr_native_step = 1.0
     _attr_mode = NumberMode.BOX
 
     def __init__(self, coordinator: WeberCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator, entry, "target_temperature")
+
+    def _reported(self, key: str, fallback: float) -> float:
+        value = self.coordinator.data.get(key)
+        return float(value) if isinstance(value, (int, float)) else fallback
+
+    @property
+    def native_min_value(self) -> float:
+        return self._reported("target_min_temperature", FALLBACK_MIN_CELSIUS)
+
+    @property
+    def native_max_value(self) -> float:
+        return self._reported("target_max_temperature", FALLBACK_MAX_CELSIUS)
+
+    @property
+    def native_step(self) -> float:
+        step = self._reported("target_step", FALLBACK_STEP_CELSIUS)
+        return step if step > 0 else FALLBACK_STEP_CELSIUS
 
     @property
     def native_value(self) -> float | None:
@@ -77,5 +91,20 @@ class WeberTargetTemperatureNumber(WeberEntity, NumberEntity):
             raise HomeAssistantError(
                 "The appliance is not reporting a cook mode. Choose a cook mode first, "
                 "then set the target temperature."
+            )
+        if self.coordinator.data.get("requires_target_on_device_first") and (
+            self.native_value is None
+        ):
+            raise HomeAssistantError(
+                "This appliance requires its target temperature to be set on the grill "
+                "itself before it accepts one remotely."
+            )
+        # Home Assistant range-checks the number entity, but a service call can
+        # still arrive out of range, and the appliance answers a bad target by
+        # rejecting the whole command rather than clamping it.
+        if not self.native_min_value <= value <= self.native_max_value:
+            raise HomeAssistantError(
+                f"{value} °C is outside the {self.native_min_value}-{self.native_max_value} °C "
+                "range this appliance accepts."
             )
         await self.coordinator.async_set_cook_mode(cook_mode_value, round(value * 10))
