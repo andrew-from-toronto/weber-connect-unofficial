@@ -216,6 +216,24 @@ class WeberCloudSession:
             )
         )
 
+    async def async_send_command(self, type_value: int, payload: bytes = b"") -> None:
+        """Send one appliance command over the established companion socket.
+
+        Deliberately refuses to open a connection of its own. The status loop
+        owns connecting, and a second opener racing it would leave one socket
+        unreferenced and the appliance holding two companion sessions.
+        """
+
+        if self._connection is None:
+            raise WeberCloudSocketError(
+                "Home Assistant is not connected to Weber Cloud. "
+                "Wait for the next update and try again."
+            )
+        await self._async_send(type_value, payload)
+        # The appliance reports the change on its next status frame. Poll now
+        # instead of leaving the entity showing the old value for the interval.
+        self.async_wake()
+
     async def _async_subscribe(self) -> None:
         """Send the observed initial subscription used by the companion app."""
 

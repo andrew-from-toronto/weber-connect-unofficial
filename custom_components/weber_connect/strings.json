@@ -126,6 +126,31 @@
         "name": "Cooking"
       }
     },
+    "number": {
+      "target_temperature": {
+        "name": "Target temperature"
+      }
+    },
+    "select": {
+      "cook_mode_control": {
+        "name": "Cook mode control",
+        "state": {
+          "unknown": "Unknown",
+          "grill": "Grill",
+          "smoke_boost": "SmokeBoost",
+          "preheat": "Preheat",
+          "indirect": "Indirect",
+          "custom": "Custom",
+          "simple": "Simple",
+          "manual": "Manual",
+          "sear": "Sear",
+          "steam": "Steam",
+          "warm": "Warm",
+          "pizza": "Pizza",
+          "clean": "Clean"
+        }
+      }
+    },
     "sensor": {
       "grill_temperature": {
         "name": "Grill temperature"
@@ -199,7 +224,9 @@
           "manual": "Manual",
           "sear": "Sear",
           "steam": "Steam",
-          "warm": "Warm"
+          "warm": "Warm",
+          "pizza": "Pizza",
+          "clean": "Clean"
         }
       },
       "cook_intensity": {

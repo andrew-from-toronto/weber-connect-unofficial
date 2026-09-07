@@ -291,8 +291,8 @@ def check_privacy_and_scope() -> None:
             if line.startswith("PLATFORMS:")
         )
     )
-    if platforms != ("binary_sensor", "sensor"):
-        fail("the integration must expose its sensor and connection platforms")
+    if platforms != ("binary_sensor", "number", "select", "sensor"):
+        fail("the integration must expose its sensor, connection, and control platforms")
     evidence = load_json(
         ROOT / "docs" / "validation" / f"{RUNTIME_EVIDENCE_VERSION}-rc-physical.json"
     )

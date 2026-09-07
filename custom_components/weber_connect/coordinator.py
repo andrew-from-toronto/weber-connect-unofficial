@@ -20,9 +20,15 @@ from .const import (
     CONF_APPLIANCE_ID,
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
+    CONF_MESSAGE_VERSION,
     DOMAIN,
 )
 from .options import WeberOptions
+from .saber_frames import (
+    DEFAULT_MESSAGE_VERSION,
+    OUTGOING_SET_COOK_MODE,
+    build_set_cook_mode_body,
+)
 from .state import normalize_state
 from .weber_cloud import CloudConfig, WeberCloudClient
 from .weber_cloud_socket import WeberCloudSession
@@ -56,6 +62,11 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.consecutive_failures = 0
         self.successful_updates = 0
         self.failed_updates = 0
+
+        # An appliance speaks the format it agreed during pairing, and older
+        # ones never learn the newer command bodies. Keep that negotiated
+        # version rather than assuming the newest the app can emit.
+        self.message_version = int(entry.data.get(CONF_MESSAGE_VERSION, DEFAULT_MESSAGE_VERSION))
 
         appliance_id = str(entry.data[CONF_APPLIANCE_ID])
         config = CloudConfig.from_mapping(
@@ -187,6 +198,22 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     translation_placeholders={"name": self.entry.title},
                 )
                 return
+
+    async def async_set_cook_mode(
+        self,
+        cook_mode_value: int,
+        target_deci_celsius: int | None = None,
+    ) -> None:
+        """Change the appliance's cook mode and, optionally, its target."""
+
+        await self.cloud_session.async_send_command(
+            OUTGOING_SET_COOK_MODE,
+            build_set_cook_mode_body(
+                self.message_version,
+                cook_mode_value,
+                target_deci_celsius,
+            ),
+        )
 
     async def async_close(self) -> None:
         """Cancel all entry work and release the selected transport."""
