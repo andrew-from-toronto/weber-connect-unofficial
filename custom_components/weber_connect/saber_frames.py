@@ -489,6 +489,23 @@ def _i32(value: bytes | None) -> int | None:
     return int.from_bytes(value[:4], "little", signed=True)
 
 
+def _duration_s(value: bytes | None) -> int | None:
+    """Read a session duration field, which the appliance sends in milliseconds.
+
+    The TLV carries a bare u32 with no unit, and reading it as seconds puts a
+    27-day countdown on a 40-minute cook. Measured 2026-09-13 against a live
+    SmokeFire probe cook: the remaining field stepped 2400000 -> 1800000 ->
+    1500000 -> 1200000, exact multiples of 300000 (a five-minute re-estimate),
+    and the elapsed field advanced 451406 over 444 wall-clock seconds - 1017 a
+    second, so the unit is milliseconds.
+    """
+
+    raw = _u32(value)
+    if raw is None:
+        return None
+    return round(raw / 1000)
+
+
 def _u64(value: bytes | None) -> int | None:
     if value is None or len(value) < 8:
         return None
@@ -550,11 +567,11 @@ def parse_probe_session_status_tlv(payload: bytes) -> dict[str, Any]:
         "session_id": _u8(_last(fields, 2)),
         "program_id_hex": bytes_to_hex(_last(fields, 3) or b"") or None,
         "plan_id": _u32(_last(fields, 16)) or _u8(_last(fields, 4)),
-        "time_remaining_s": _u32(_last(fields, 5)),
-        "time_elapsed_s": _u32(_last(fields, 6)),
+        "time_remaining_s": _duration_s(_last(fields, 5)),
+        "time_elapsed_s": _duration_s(_last(fields, 6)),
         "step_id": _u16(_last(fields, 17)) or _u8(_last(fields, 7)),
-        "prompt_time_remaining_s": _u32(_last(fields, 8)),
-        "prompt_time_elapsed_s": _u32(_last(fields, 9)),
+        "prompt_time_remaining_s": _duration_s(_last(fields, 8)),
+        "prompt_time_elapsed_s": _duration_s(_last(fields, 9)),
         "prompt_id": _u16(_last(fields, 18)) or _u8(_last(fields, 11)),
         "state_value": state_value,
         "state": _lookup(SESSION_STATES, state_value),
@@ -585,10 +602,10 @@ def parse_timed_session_status_tlv(payload: bytes) -> dict[str, Any]:
         "slot_index": slot_index,
         "slot_number": slot_index + 1 if slot_index is not None else None,
         "session_id": _u8(_last(fields, 2)),
-        "time_remaining_s": _u32(_last(fields, 5)),
-        "time_elapsed_s": _u32(_last(fields, 6)),
-        "prompt_time_remaining_s": _u32(_last(fields, 8)),
-        "prompt_time_elapsed_s": _u32(_last(fields, 9)),
+        "time_remaining_s": _duration_s(_last(fields, 5)),
+        "time_elapsed_s": _duration_s(_last(fields, 6)),
+        "prompt_time_remaining_s": _duration_s(_last(fields, 8)),
+        "prompt_time_elapsed_s": _duration_s(_last(fields, 9)),
         "state_value": state_value,
         "state": _lookup(SESSION_STATES, state_value),
     }
@@ -604,8 +621,8 @@ def parse_timer_session_status_tlv(payload: bytes) -> dict[str, Any]:
         "slot_index": slot_index,
         "slot_number": slot_index + 1 if slot_index is not None else None,
         "timer_id": _u8(_last(fields, 2)),
-        "time_remaining_s": _u32(_last(fields, 5)),
-        "time_elapsed_s": _u32(_last(fields, 6)),
+        "time_remaining_s": _duration_s(_last(fields, 5)),
+        "time_elapsed_s": _duration_s(_last(fields, 6)),
         "state_value": state_value,
         "state": _lookup(SESSION_STATES, state_value),
     }

@@ -166,11 +166,11 @@ class CookSessionStatusTests(unittest.TestCase):
                 tlv(2, bytes([7])),  # session id
                 tlv(3, b"\xaa\xbb"),  # program id
                 tlv(16, (100).to_bytes(4, "little")),  # plan id u32
-                tlv(5, (600).to_bytes(4, "little")),  # time remaining
-                tlv(6, (30).to_bytes(4, "little")),  # time elapsed
+                tlv(5, (600_000).to_bytes(4, "little")),  # time remaining, ms
+                tlv(6, (30_000).to_bytes(4, "little")),  # time elapsed, ms
                 tlv(17, (2).to_bytes(2, "little")),  # step id u16
-                tlv(8, (5).to_bytes(4, "little")),
-                tlv(9, (1).to_bytes(4, "little")),
+                tlv(8, (5_000).to_bytes(4, "little")),
+                tlv(9, (1_000).to_bytes(4, "little")),
                 tlv(18, (3).to_bytes(2, "little")),  # prompt id u16
                 tlv(12, bytes([5])),  # state ACTIVE
                 tlv(19, bytes([1])),  # probe type WIRED
@@ -201,8 +201,8 @@ class CookSessionStatusTests(unittest.TestCase):
             [
                 tlv(1, bytes([1])),
                 tlv(2, bytes([8])),
-                tlv(5, (900).to_bytes(4, "little")),
-                tlv(6, (60).to_bytes(4, "little")),
+                tlv(5, (900_000).to_bytes(4, "little")),
+                tlv(6, (60_000).to_bytes(4, "little")),
                 tlv(12, bytes([5])),
             ]
         )
@@ -212,8 +212,8 @@ class CookSessionStatusTests(unittest.TestCase):
             [
                 tlv(1, bytes([2])),
                 tlv(2, bytes([9])),
-                tlv(5, (300).to_bytes(4, "little")),
-                tlv(6, (30).to_bytes(4, "little")),
+                tlv(5, (300_000).to_bytes(4, "little")),
+                tlv(6, (30_000).to_bytes(4, "little")),
                 tlv(12, bytes([6])),
             ]
         )
@@ -326,6 +326,24 @@ class CookSessionStatusTests(unittest.TestCase):
     def test_probe_tlv_unparsed_tail(self) -> None:
         row = sf.parse_probe_session_status_tlv(tlv(1, bytes([0])) + b"\x07")
         self.assertEqual(row["unparsed_tail_hex"], "07")
+
+    def test_session_durations_are_milliseconds_on_the_wire(self) -> None:
+        # Captured 2026-09-13 from a live SmokeFire probe cook: 40 minutes left
+        # with 69 minutes elapsed. Read as seconds these are 27 days and 48 days.
+        row = sf.parse_probe_session_status_tlv(
+            tlv(1, bytes([0]))
+            + tlv(5, (2_400_000).to_bytes(4, "little"))
+            + tlv(6, (4_148_813).to_bytes(4, "little"))
+        )
+
+        self.assertEqual(row["time_remaining_s"], 2400)
+        self.assertEqual(row["time_elapsed_s"], 4149)
+
+    def test_absent_duration_stays_none_rather_than_zero(self) -> None:
+        row = sf.parse_probe_session_status_tlv(tlv(1, bytes([0])))
+
+        self.assertIsNone(row["time_remaining_s"])
+        self.assertIsNone(row["time_elapsed_s"])
 
     def test_text_decode_failure_returns_none(self) -> None:
         row = sf.parse_probe_session_status_tlv(tlv(1, bytes([0])) + tlv(20, b"\xff\xfe"))

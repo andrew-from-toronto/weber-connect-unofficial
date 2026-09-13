@@ -292,11 +292,17 @@ def _duration_description(
     placeholders: dict[str, str],
     attributes_fn: Callable[[dict[str, Any]], dict[str, Any]],
 ) -> WeberSensorDescription:
+    # Stored in seconds, because that is the resolution the appliance reports
+    # and what an automation wants to compare against. Shown in minutes,
+    # because a cook is read in minutes and "2400 s" is not a countdown anyone
+    # reads. A viewer who disagrees can override the unit per entity.
     return WeberSensorDescription(
         key=key,
         translation_key=translation_key,
         translation_placeholders=placeholders,
         native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
+        suggested_display_precision=0,
         device_class=SensorDeviceClass.DURATION,
         icon="mdi:timer-outline",
         value_fn=_value(key),
