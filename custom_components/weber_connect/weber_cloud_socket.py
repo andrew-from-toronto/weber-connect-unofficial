@@ -20,7 +20,6 @@ from .saber_frames import (
     parse_appliance_capabilities_payload,
     parse_appliance_status_payload,
     parse_cook_session_status_payload,
-    parse_tlv,
 )
 from .weber_cloud import WeberCloudAuthError
 
@@ -281,20 +280,6 @@ class WeberCloudSession:
                         "Cloud socket message was routed to or from an unexpected device."
                     )
                 self.received_types = [*self.received_types[-19:], message.type_value]
-                if message.type_value not in (0x80, 0x83):
-                    # CLAUDE PROBE (read-only, temporary): the capabilities
-                    # frame arrives but parses to all-nulls. Dump every frame
-                    # that is not routine status so we can tell an unexpected
-                    # TLV shape from an encrypted body, and so a rejection of a
-                    # command becomes visible instead of just raising.
-                    LOGGER.warning(
-                        "CLAUDE PROBE type=0x%02x mv=%s len=%s tags=%s hex=%s",
-                        message.type_value,
-                        message.message_version,
-                        len(message.payload),
-                        sorted(parse_tlv(message.payload)),
-                        message.payload.hex(" "),
-                    )
                 if message.type_value == 0x87:
                     raise WeberCloudSocketError("The hub rejected the cloud request.")
                 if message.type_value == 0x83:
