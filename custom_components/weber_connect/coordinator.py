@@ -206,14 +206,19 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         """Change the appliance's cook mode and, optionally, its target."""
 
-        await self.cloud_session.async_send_command(
-            OUTGOING_SET_COOK_MODE,
-            build_set_cook_mode_body(
-                self.message_version,
-                cook_mode_value,
-                target_deci_celsius,
-            ),
+        _body = build_set_cook_mode_body(
+            self.message_version,
+            cook_mode_value,
+            target_deci_celsius,
         )
+        _LOGGER.warning(
+            "CLAUDE EXPERIMENT set_cook_mode mv=%s mode=%s target_dc=%s body=%s",
+            self.message_version,
+            cook_mode_value,
+            target_deci_celsius,
+            _body.hex(" "),
+        )
+        await self.cloud_session.async_send_command(OUTGOING_SET_COOK_MODE, _body)
 
     async def async_close(self) -> None:
         """Cancel all entry work and release the selected transport."""
