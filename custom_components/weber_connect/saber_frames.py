@@ -25,7 +25,7 @@ DEFAULT_MESSAGE_VERSION = 11
 # appliance reports the format it speaks during pairing, so both older shapes
 # stay reachable: a SmokeFire pairs as ROCKET and never sees the tagged form.
 COOK_MODE_COMMAND_VERSION = 7
-TLV_COMMAND_VERSION = 10  # CLAUDE EXPERIMENT: was 11
+TLV_COMMAND_VERSION = 11
 NO_TEMPERATURE_DC = -32768
 OUTGOING_SET_COOK_MODE = 0x0C
 
