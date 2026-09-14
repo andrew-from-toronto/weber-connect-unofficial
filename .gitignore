@@ -20,3 +20,6 @@ mqtt_credentials.json
 *pairing_keys*.json
 pair_latest.json
 scan_latest.json
+
+# Decompiled Weber Connect APK: protocol evidence, not ours to redistribute.
+.apk-decompile/
