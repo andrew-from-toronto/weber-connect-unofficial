@@ -144,6 +144,23 @@ def normalize_state(
         state[f"probe_{number}_prompt_time_remaining"] = probe.get("prompt_time_remaining_s")
         state[f"probe_{number}_prompt_time_elapsed"] = probe.get("prompt_time_elapsed_s")
         state[f"probe_{number}_state"] = probe.get("state")
+        # Tags 23 and 13, carried through unidentified, because the probe target is not in the telemetry
+        # and these are the only places it could be hiding.
+        #
+        # Established from the Weber Connect app (see .apk-decompile): a probe target is set by uploading
+        # a CookProgram whose Plan.Step carries a ProbeTempAbove trigger in milliCelsius, and the app
+        # resolves what to display from its own copy of that program - GetCookTargetsInfoUseCaseKt.d()
+        # reads the step's triggers, never the status frame. The appliance echoes back only programId,
+        # planId and stepId, which are pointers into a program we do not have. The proof that telemetry
+        # alone is not enough is the app's own KnownProgram/UnknownProgram split: faced with a program it
+        # cannot resolve it shows a bare "Probe N" and no target at all.
+        #
+        # segment_temps (tag 23) is the one appliance-reported temperature list, and nothing in the
+        # 19,000 decompiled classes ever reads it - so its meaning cannot be settled from their code,
+        # only by watching it during a cook with a target set. active_events is the only place an
+        # "at target" alert could arrive. Both were parsed already and dropped at this boundary.
+        state[f"probe_{number}_segment_temps"] = probe.get("segment_temps")
+        state[f"probe_{number}_active_events"] = probe.get("active_events")
         state[f"probe_{number}_reading_status"] = (
             state["reading_status"]
             if not connected

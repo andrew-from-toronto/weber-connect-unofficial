@@ -598,4 +598,8 @@ class WeberSensor(WeberEntity, SensorEntity):
             "probe_state": self.coordinator.data.get(f"probe_{number}_state"),
             "probe_type": self.coordinator.data.get(f"probe_{number}_type"),
             "battery_level": self.coordinator.data.get(f"probe_{number}_battery"),
+            # Unidentified, and here to be watched rather than used: see the note in state.py. A probe
+            # target never reaches us as a number, so these are the only chance of recovering one.
+            "segment_temps": self.coordinator.data.get(f"probe_{number}_segment_temps"),
+            "active_events": self.coordinator.data.get(f"probe_{number}_active_events"),
         }
