@@ -10,16 +10,20 @@ from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .ble_session import BleSessionKeys, WeberBluetoothSession
 from .const import (
     CLOUD_OFFLINE_RETAINED_KEYS,
     CONF_APPLIANCE_ID,
+    CONF_APPLIANCE_PUBLIC_KEY,
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
+    CONF_COMPANION_PUBLIC_KEY,
     CONF_MESSAGE_VERSION,
     DOMAIN,
 )
@@ -45,6 +49,8 @@ class _TransportSession(Protocol):
     ) -> None: ...
 
     def async_wake(self) -> None: ...
+
+    async def async_send_command(self, type_value: int, payload: bytes = b"") -> None: ...
 
     async def async_close(self) -> None: ...
 
@@ -78,7 +84,28 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.cloud_client = WeberCloudClient(config)
         self.cloud_session = WeberCloudSession(hass, self.cloud_client, appliance_id)
-        self._transport: _TransportSession = self.cloud_session
+        # An entry paired before local control was implemented never stored the
+        # session material, and it is only offered during pairing - so the
+        # choice of transport is made by what the entry actually holds rather
+        # than by an option a user could set without the secrets behind it.
+        # Re-pairing is what opts an appliance into local operation, and it
+        # costs the phone app its Bluetooth slot: an appliance accepts one owner.
+        companion_key = str(entry.data.get(CONF_COMPANION_PUBLIC_KEY, ""))
+        appliance_key = str(entry.data.get(CONF_APPLIANCE_PUBLIC_KEY, ""))
+        address = str(entry.data.get(CONF_ADDRESS, ""))
+        self.ble_session: WeberBluetoothSession | None = None
+        if companion_key and appliance_key and address:
+            self.ble_session = WeberBluetoothSession(
+                hass,
+                address,
+                str(entry.data[CONF_COMPANION_ID]),
+                BleSessionKeys.from_hex(companion_key, appliance_key),
+                self.message_version,
+            )
+            self.source = "bluetooth"
+            self._transport: _TransportSession = self.ble_session
+        else:
+            self._transport = self.cloud_session
 
         super().__init__(
             hass,
@@ -206,7 +233,11 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     ) -> None:
         """Change the appliance's cook mode and, optionally, its target."""
 
-        await self.cloud_session.async_send_command(
+        # Whichever transport is live owns the command. Over Bluetooth it goes
+        # inside the secure session; over the cloud it is accepted and dropped
+        # (see ADR 0004), which is why a paired-for-local entry is the only one
+        # that can actually change anything.
+        await self._transport.async_send_command(
             OUTGOING_SET_COOK_MODE,
             build_set_cook_mode_body(
                 self.message_version,

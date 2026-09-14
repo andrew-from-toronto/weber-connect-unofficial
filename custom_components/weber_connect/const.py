@@ -32,6 +32,11 @@ CONF_COMPANION_ID: Final = "companion_id"
 CONF_MESSAGE_VERSION: Final = "message_version"
 CONF_CLOUD_PASSWORD: Final = "cloud_password"
 CONF_APPLIANCE_ID: Final = "appliance_id"
+# Both halves of the local secure-session material. Secrets: never surface them
+# in diagnostics, which is why they sit beside the cloud password rather than
+# in the options a user can see.
+CONF_COMPANION_PUBLIC_KEY: Final = "companion_public_key"
+CONF_APPLIANCE_PUBLIC_KEY: Final = "appliance_public_key"
 
 CONF_CONNECTION: Final = "connection"
 CONF_CONNECTION_MODE: Final = "connection_mode"

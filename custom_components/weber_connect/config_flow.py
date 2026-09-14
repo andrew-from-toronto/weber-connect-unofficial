@@ -19,8 +19,10 @@ from homeassistant.data_entry_flow import section
 from .bluetooth import WeberBluetoothError, async_pair, generate_identity
 from .const import (
     CONF_APPLIANCE_ID,
+    CONF_APPLIANCE_PUBLIC_KEY,
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
+    CONF_COMPANION_PUBLIC_KEY,
     CONF_MESSAGE_VERSION,
     CONF_PROBE_NAME_PREFIX,
     CONF_PROBES,
@@ -412,6 +414,8 @@ class WeberConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_MESSAGE_VERSION: result.message_version,
             CONF_APPLIANCE_ID: result.appliance_id,
             CONF_CLOUD_PASSWORD: self._cloud_config.device_password,
+            CONF_COMPANION_PUBLIC_KEY: self._identity.public_key,
+            CONF_APPLIANCE_PUBLIC_KEY: result.appliance_public_key,
         }
 
     async def _async_wait_for_cloud_association(

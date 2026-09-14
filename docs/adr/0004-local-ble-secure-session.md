@@ -2,9 +2,10 @@
 
 ## Status
 
-Proposed. The session construction is implemented and verified
-(`custom_components/weber_connect/josl_session.py`); the transport that would
-use it is not written.
+Implemented, and unverified against hardware. The session construction
+(`josl_session.py`), the local transport (`ble_session.py`), the pairing storage
+it needs and the coordinator wiring are all in place and covered by tests. No
+part of it has yet exchanged a frame with a real appliance.
 
 ## Context
 
@@ -61,42 +62,55 @@ session, and only the command path does.
 
 ## Decision
 
-Treat the local Bluetooth path as the route for command and control, and keep
-the session implementation separate from the transport that will use it.
+Take the whole appliance link local when the entry holds the material for it.
 
-`josl_session.py` is committed on its own because it is verifiable without an
-appliance and the transport is not. Its frames were compared byte for byte
-against `libjsecclient.so` over 36000 wraps spanning both body parities, the
-plaintext gate, passthrough mode and counter rollover, with zero differences;
-the vectors in `tests_native/test_josl_session.py` are that library's output.
+`josl_session.py` carries the session construction. Its frames were compared
+byte for byte against `libjsecclient.so` over 36000 wraps spanning both body
+parities, the plaintext gate, passthrough mode and counter rollover, with zero
+differences; the vectors in `tests_native/test_josl_session.py` are that
+library's output rather than this implementation's.
 
-ADR 0003's conclusion stands unchanged for *telemetry*: a local status frame is
-still unauthenticated, still forgeable by a nearby peer, and is not a basis for
-publishing temperatures. Nothing here argues for reinstating `home_assistant_only`
-reading. A command we *send* is a different question - it is authenticated by the
-session, and its counter makes it unreplayable.
+`ble_session.py` is the transport: connect, greet with `0x70` and a fresh
+32-byte nonce, derive the session from the answer, then fetch and command inside
+it. Reading is not a lesser capability than commanding here - the app marks the
+status fetches `requiresEncryption` too - so a local link either does both or
+neither.
+
+**The transport is chosen by what the entry stores, not by an option.** The
+session material only exists if the user paired after this change, and an option
+offering local operation without the secrets behind it would be a setting that
+silently does nothing. Re-pairing is the opt-in. The cost is real and should be
+stated where a user will meet it: an appliance accepts one Bluetooth owner at a
+time, so a locally-driven grill is one the phone app cannot reach.
+
+ADR 0003's conclusion stands unchanged for telemetry frames themselves: a status
+frame is still unauthenticated and still forgeable by whatever peer holds the
+connection. What changed is that the *peer* can now be authenticated, because
+the appliance only answers a fetch it could decrypt. The transport therefore
+publishes only what arrives in reply to its own encrypted request, on a link
+whose handshake succeeded. Unsolicited local telemetry is still not listened to,
+and `home_assistant_only` is not reinstated.
+
+The release validator's privacy rule is inverted rather than removed. It used to
+forbid a persisted constant for this material, which was right while nothing
+could use it; it now *requires* both constants to exist, and the existing rule
+that diagnostics redact them is what keeps the guarantee that mattered. The
+companion private key stays transient - nothing derives anything from it.
 
 ## Consequences
 
-Not yet done, in dependency order:
+- **Existing installations keep using the cloud** and are unaffected. The
+  appliance offers its half of the material exactly once, during pairing, so
+  there is no migration: adopting local control means pairing again.
+- **The config entry now holds a shared secret.** It sits beside the cloud
+  password and is redacted in diagnostics by name.
+- Two transports now exist behind one `_TransportSession` protocol, and
+  `async_send_command` is part of that protocol rather than a cloud-only method.
 
-1. **Pairing must keep both public keys.** `async_pair` currently parses the
-   appliance's 64-byte public key out of the pairing response and discards it,
-   and the companion public key it generated is not stored either. Both are
-   required to derive a session key, so this is the blocking change - and it
-   means **an existing installation has to re-pair**, because the material was
-   never written down. Storing them makes the config entry hold a shared secret;
-   it belongs with the cloud password, not in diagnostics.
-2. **A Bluetooth transport.** `WeberCoordinator` already owns exactly one
-   `_TransportSession`, so the shape exists. The connection must send the `0x70`
-   handshake greeting with a fresh 32-byte nonce, derive the session from the
-   response, and wrap outgoing commands. The appliance accepts one BLE owner at
-   a time, so this competes with the phone app.
-3. **A decision about which transport reads.** Local commands plus cloud
-   telemetry is coherent (and keeps ADR 0003 intact) but holds two connections.
-
-Untested against hardware, and worth saying explicitly: the appliance's
-acceptance of a companion-originated `0x0C` over BLE has not been observed. It
-is what the app does, but the same assumption about the cloud path proved wrong.
-The first real test should be a setpoint change on a lit grill with a person
-watching it.
+**Nothing here has touched a real appliance.** Every test drives a fake GATT
+client, so what is proven is that the implementation does what this document
+says - not that the appliance agrees. The specific unverified claim is the one
+that matters most: that a paired companion can open a session over BLE and have
+a `0x0C` accepted. That is what the app does, and the identical assumption about
+the cloud path turned out to be wrong. The first real test should be a setpoint
+change on a lit grill with a person watching the grill, not the logs.

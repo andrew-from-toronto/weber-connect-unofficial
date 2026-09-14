@@ -267,9 +267,17 @@ def check_privacy_and_scope() -> None:
         if private_key not in diagnostics:
             fail(f"diagnostics do not redact {private_key}")
     constants = (INTEGRATION / "const.py").read_text(encoding="utf-8")
-    for removed in ("CONF_COMPANION_PRIVATE_KEY", "CONF_COMPANION_PUBLIC_KEY"):
-        if removed in constants:
-            fail(f"transient pairing material must not have a persisted constant: {removed}")
+    # The companion *private* key stays transient: nothing derives anything from
+    # it and the appliance never sees it. The two 64-byte session blobs became a
+    # different matter with ADR 0004 - a local secure session cannot be derived
+    # without them, and the appliance offers its half exactly once during
+    # pairing - so they are now required to be stored, and required above to be
+    # redacted everywhere they could leave the instance.
+    if "CONF_COMPANION_PRIVATE_KEY" in constants:
+        fail("the companion private key must not have a persisted constant")
+    for needed in ("CONF_COMPANION_PUBLIC_KEY", "CONF_APPLIANCE_PUBLIC_KEY"):
+        if needed not in constants:
+            fail(f"local session material must have a persisted constant: {needed}")
     bluetooth = (INTEGRATION / "bluetooth.py").read_text(encoding="utf-8")
     if "async_ble_device_from_address" not in bluetooth:
         fail("Bluetooth transport must resolve devices through Home Assistant")
@@ -278,9 +286,14 @@ def check_privacy_and_scope() -> None:
     if "async_ble_device_from_address" in (INTEGRATION / "weber_cloud.py").read_text():
         fail("cloud code must not own Bluetooth adapter selection")
     models = (INTEGRATION / "models.py").read_text(encoding="utf-8")
-    for removed in ("private_key", "appliance_public_key", "verification_code"):
+    # `appliance_public_key` left this list when it stopped being unused: the
+    # pairing result is the only place it is ever offered. The other two are
+    # still carried by nothing and must stay out.
+    for removed in ("private_key", "verification_code"):
         if removed in models:
             fail(f"unused pairing field must not remain in runtime models: {removed}")
+    if "appliance_public_key" not in models:
+        fail("the pairing result must carry the appliance session key")
     cloud_client = (INTEGRATION / "weber_cloud.py").read_text(encoding="utf-8")
     if "def associate(" in cloud_client:
         fail("obsolete manual cloud-association endpoint must not ship")

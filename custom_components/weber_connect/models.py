@@ -20,6 +20,11 @@ class PairingResult:
 
     message_version: int
     appliance_id: str
+    # The appliance's half of the material a local secure session is derived
+    # from. It is offered exactly once, in the pairing response, so an entry
+    # created without it can never command the appliance locally until the user
+    # pairs again. Empty for entries that predate local control.
+    appliance_public_key: str = ""
 
 
 @dataclass(slots=True)

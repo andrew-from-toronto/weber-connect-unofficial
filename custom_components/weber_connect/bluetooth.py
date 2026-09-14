@@ -297,6 +297,14 @@ async def async_pair(
         appliance_id = str(pairing_payload.get("appliance_id") or "").replace(":", "")
         if len(appliance_id) != 32:
             raise WeberBluetoothError("The hub returned an invalid appliance identity.")
+        # Offered exactly once, here. Losing it costs the user another physical
+        # pairing before anything can be commanded locally, so keep it even
+        # though only the local transport reads it.
+        appliance_public_key = str(pairing_payload.get("appliance_public_key") or "").replace(
+            ":", ""
+        )
+        if len(appliance_public_key) != 128:
+            appliance_public_key = ""
 
         post_pair = build_command_frame(
             sequence + 1,
@@ -308,6 +316,7 @@ async def async_pair(
         await poll_response(5.0)
         return PairingResult(
             message_version=version,
+            appliance_public_key=appliance_public_key,
             appliance_id=appliance_id,
         )
     except BleakCharacteristicNotFoundError as exc:
