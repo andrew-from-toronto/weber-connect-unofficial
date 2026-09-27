@@ -28,9 +28,12 @@ from custom_components.weber_connect.saber_frames import (
     PRIMITIVE_PROGRAM_ID,
     SESSION_COMMAND_REMOVE,
     SESSION_COMMAND_START,
+    build_fetch_program_details_body,
     build_plan_payload_bodies,
     build_probe_target_plan,
     build_session_command_body,
+    parse_program_details_payload,
+    probe_target_from_program,
 )
 
 # 203 F = 95.0 C, traced by hand from CookProgramPayloadKt for message version 10.
@@ -204,3 +207,124 @@ async def test_probe_target_number_and_clear_button_drive_the_coordinator() -> N
     button = WeberClearProbeTargetButton(coordinator, _entry(), 1)  # type: ignore[arg-type]
     await button.async_press()
     coordinator.async_clear_probe_target.assert_awaited_once_with(1)
+
+
+# What the grill sent back for the program HA uploaded: probe 1, plan 1, 145 F.
+DETAILS_145F = (
+    bytes([1, 0])
+    + bytes(16)
+    + bytes([1])
+    + bytes.fromhex("09 5072696d6974697665 00 01 02 00000000 0080 01 74020000 03 02 00 00")
+)
+
+
+def test_program_details_decode_to_the_probe_target_the_app_shows() -> None:
+    details = parse_program_details_payload(10, DETAILS_145F)
+    assert details is not None
+    assert details["session_index"] == 0
+    assert details["plan_id"] == 1
+    assert details["program_id_hex"] == "00" * 16
+    assert details["steps"][0]["cooking_temp_dc"] is None
+    assert probe_target_from_program(details, 2) == 628
+    # An unknown active step falls back to the last one, as the app does.
+    assert probe_target_from_program(details, 9) == 628
+
+
+def test_program_details_walk_a_wide_multi_step_program() -> None:
+    step_one = bytes([1, 0]) + bytes(4) + (1000).to_bytes(2, "little") + bytes([0, 2, 1])
+    step_two = (
+        bytes([7, 0])
+        + bytes(4)
+        + b"\x00\x80"
+        + bytes([1])
+        + (900).to_bytes(4, "little")
+        + bytes([9, 2, 0])
+    )
+    payload = (
+        bytes([1, 2])
+        + bytes(range(16))
+        + (5).to_bytes(4, "little")
+        + bytes([1, 0x41, 0])
+        + (2).to_bytes(2, "little")
+        + step_one
+        + step_two
+        + bytes([0, 0])
+    )
+    details = parse_program_details_payload(11, payload)
+    assert details is not None
+    assert details["plan_id"] == 5
+    assert [step["id"] for step in details["steps"]] == [1, 7]
+    assert details["steps"][0]["cooking_temp_dc"] == 1000
+    # The active step has only a probe floor, so there is no ceiling target.
+    assert probe_target_from_program(details, 7) is None
+    assert probe_target_from_program({"steps": []}, 1) is None
+
+
+def test_program_details_before_rocket_carry_no_step_cook_mode() -> None:
+    # Drop the step's cook-mode byte: requirement, then straight to prompts.
+    details = parse_program_details_payload(9, DETAILS_145F[:-2] + bytes(1))
+    assert details is not None
+    assert probe_target_from_program(details, 2) == 628
+
+
+def test_truncated_program_details_are_refused() -> None:
+    assert parse_program_details_payload(10, DETAILS_145F[:-6]) is None
+    assert build_fetch_program_details_body(1, 3) == bytes([1, 3])
+
+
+class RecordingSession:
+    def __init__(self) -> None:
+        self.requests: list[tuple[int, int]] = []
+
+    def request_program_details(self, session_type: int, session_index: int) -> None:
+        self.requests.append((session_type, session_index))
+
+
+def test_a_running_program_is_read_back_and_a_finished_one_clears() -> None:
+    coordinator, _transport = _coordinator()
+    session = RecordingSession()
+    coordinator.ble_session = session
+    row = {"state": "ACTIVE_FIXED", "program_id_hex": ":".join(["00"] * 16), "plan_id": 1}
+    row.update(session_id=4, step_id=2)
+    coordinator._probe_sessions[1] = row
+
+    coordinator._reconcile_probe_targets({})
+    coordinator._reconcile_probe_targets({})
+    assert session.requests == [(1, 0)]  # asked once, not every tick
+
+    details = parse_program_details_payload(10, DETAILS_145F)
+    coordinator._reconcile_probe_targets({0: details})
+    assert coordinator.probe_targets[1] == 62.8
+
+    # A program whose details say nothing usable leaves the target alone.
+    coordinator._reconcile_probe_targets({0: {**details, "steps": []}})
+    assert coordinator.probe_targets[1] == 62.8
+
+    coordinator._probe_sessions[1] = {"state": "PROBED"}
+    coordinator._reconcile_probe_targets({})
+    assert coordinator.probe_targets[1] is None
+
+
+def test_a_target_just_sent_survives_the_appliance_catching_up() -> None:
+    coordinator, _transport = _coordinator()
+    coordinator.probe_targets[1] = 62.8
+    coordinator._target_sent_at[1] = coordinator_module.time.monotonic()
+    coordinator._probe_sessions[1] = {"state": "PROBED"}
+    coordinator._reconcile_probe_targets({})
+    assert coordinator.probe_targets[1] == 62.8
+
+
+def test_status_keeps_only_rows_that_name_a_probe() -> None:
+    coordinator, _transport = _coordinator()
+    coordinator.successful_updates = 0
+    coordinator._reconcile_probe_targets = MagicMock()
+    coordinator.hass = MagicMock()
+    coordinator.entry = SimpleNamespace(entry_id="entry", unique_id=None)
+    coordinator.source = "bluetooth"
+    coordinator.async_set_updated_data = MagicMock()
+    with (
+        patch.object(coordinator_module.ir, "async_delete_issue"),
+        patch.object(coordinator_module.dr, "async_get"),
+    ):
+        coordinator._async_status({"probes": [{"probe_number": None}, {"probe_number": 2}]})
+    assert list(coordinator._probe_sessions) == [2]

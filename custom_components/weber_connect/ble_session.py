@@ -367,7 +367,10 @@ class WeberBluetoothSession:
                 continue
             if type_value == INCOMING_PROGRAM_DETAILS:
                 details = parse_program_details_payload(self.message_version, payload)
-                if details is not None:
+                if details is None:
+                    # Garbled is not answered: keep waiting for the real reply.
+                    awaiting.add(INCOMING_PROGRAM_DETAILS)
+                else:
                     self.program_details[details["session_index"]] = details
                 continue
             if type_value == INCOMING_STATUS and cook is None:

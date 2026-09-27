@@ -676,3 +676,44 @@ def test_coordinator_selects_bluetooth_only_with_stored_session_material() -> No
         fallback = coordinator_module.WeberCoordinator(hass, declined)  # type: ignore[arg-type]
         assert fallback.source == "cloud"
         assert fallback.ble_session is None
+
+
+@pytest.mark.asyncio
+async def test_a_program_readback_rides_inside_the_next_fetch() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    session._capabilities = {"probe_count": 1}
+    session.request_program_details(1, 0)
+    details = (
+        bytes([1, 0])
+        + bytes(16)
+        + bytes([1])
+        + bytes.fromhex("09 5072696d6974697665 00 01 02 00000000 0080 01 74020000 03 02 00 00")
+    )
+    client.push(
+        _reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06])),
+        _reply(transport.INCOMING_APPLIANCE_STATUS, _appliance_status_payload()),
+        _reply(transport.INCOMING_PROGRAM_DETAILS, b"\x01"),  # malformed: ignored
+        _reply(transport.INCOMING_PROGRAM_DETAILS, details),
+    )
+    status = await session._async_fetch(client)
+    assert status is not None
+    assert status["program_details"][0]["plan_id"] == 1
+    assert session._program_requests == set()
+
+
+@pytest.mark.asyncio
+async def test_the_fetch_deadline_holds_against_a_stream_of_status() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    session._capabilities = {"probe_count": 1}
+    client.push(*[_reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06]))] * 5)
+    with patch.object(transport, "REPLY_GRACE", 0.0):
+        status = await session._async_fetch(client)
+    assert status is not None
