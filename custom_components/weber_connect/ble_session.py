@@ -43,16 +43,20 @@ from .bluetooth import WeberBluetoothError, _connect, _safe_disconnect
 from .josl_session import JoslSecureSession, JoslSecureSessionError
 from .saber_frames import (
     COMMAND_UUID,
+    INCOMING_PROGRAM_DETAILS,
     NOTIFICATION_UUID,
+    OUTGOING_FETCH_PROGRAM_DETAILS,
     RESPONSE_UUID,
     SESSION_UUID,
     STATUS_UUID,
     build_appliance_payload,
+    build_fetch_program_details_body,
     build_handshake_body,
     build_transport_frame,
     parse_appliance_capabilities_payload,
     parse_appliance_status_payload,
     parse_cook_session_status_payload,
+    parse_program_details_payload,
     parse_tlv,
     wrap_null_session,
 )
@@ -145,6 +149,10 @@ class WeberBluetoothSession:
         self._appliance_status: dict[str, Any] = {}
         self._capabilities: dict[str, Any] = {}
         self.capabilities_frames = 0
+        # Probe slots whose running program the coordinator wants read back, and
+        # the latest program the appliance described for each slot.
+        self._program_requests: set[tuple[int, int]] = set()
+        self.program_details: dict[int, dict[str, Any]] = {}
         self.capabilities_shape: tuple[tuple[int, int], ...] = ()
         self._closing = False
 
@@ -153,6 +161,12 @@ class WeberBluetoothSession:
         """Whether a handshake has completed on the current link."""
 
         return self._session is not None
+
+    def request_program_details(self, session_type: int, session_index: int) -> None:
+        """Read one slot's program back on the next fetch, and fetch soon."""
+
+        self._program_requests.add((session_type, session_index))
+        self.async_wake()
 
     def async_wake(self) -> None:
         """Ask the status loop to fetch now instead of waiting for its tick."""
@@ -295,9 +309,28 @@ class WeberBluetoothSession:
             awaiting.add(INCOMING_APPLIANCE_CAPABILITIES)
             await self._async_write(client, OUTGOING_FETCH_APPLIANCE_CAPABILITIES)
         await self._async_write(client, OUTGOING_FETCH_STATUS)
+        # Asked inside the fetch for the same reason: a reply landing between
+        # fetches would be drained unread.
+        requests, self._program_requests = self._program_requests, set()
+        for session_type, session_index in sorted(requests):
+            awaiting.add(INCOMING_PROGRAM_DETAILS)
+            await self._async_write(
+                client,
+                OUTGOING_FETCH_PROGRAM_DETAILS,
+                build_fetch_program_details_body(session_type, session_index),
+            )
         cook: dict[str, Any] | None = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + STATUS_TIMEOUT
         while cook is None or awaiting:
-            answer = await self._async_next_payload(STATUS_TIMEOUT if cook is None else REPLY_GRACE)
+            # A deadline, not a per-frame timeout: with a probe program running the
+            # appliance streams status frames back to back, and a wait that restarted
+            # on each of them never ended - measured 2026-09-27 as a link that stayed
+            # up, failed nothing, and published nothing for minutes.
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            answer = await self._async_next_payload(remaining)
             if answer is None:
                 break
             type_value, payload = answer
@@ -332,14 +365,21 @@ class WeberBluetoothSession:
                 if any(value not in (None, []) for value in decoded.values()):
                     self._capabilities = decoded
                 continue
+            if type_value == INCOMING_PROGRAM_DETAILS:
+                details = parse_program_details_payload(self.message_version, payload)
+                if details is not None:
+                    self.program_details[details["session_index"]] = details
+                continue
             if type_value == INCOMING_STATUS and cook is None:
                 cook = parse_cook_session_status_payload(payload)
+                deadline = min(deadline, loop.time() + REPLY_GRACE)
         if cook is None:
             return None
         return {
             **cook,
             **{k: v for k, v in self._appliance_status.items() if k != "kind"},
             **self._capabilities,
+            "program_details": dict(self.program_details),
         }
 
     async def _async_connect(self) -> BleakClient:

@@ -30,6 +30,8 @@ NO_TEMPERATURE_DC = -32768
 OUTGOING_SET_COOK_MODE = 0x0C
 OUTGOING_SESSION_COMMAND = 0x01
 OUTGOING_PLAN_PAYLOAD = 0x04
+OUTGOING_FETCH_PROGRAM_DETAILS = 0x0B
+INCOMING_PROGRAM_DETAILS = 0x86
 
 # A probe target is a one-step "primitive" program the app uploads itself
 # (SaberMessageFactory.e): no cavity temperature, cook mode NONE, one probe
@@ -45,6 +47,8 @@ TRIGGER_PROBE_TEMP_CEILING = 3
 TRIGGER_REQUIREMENT_ANY = 2
 ETA_CURVE_NONE = 0
 STEP_COOK_MODE_NONE = 0
+# A step carries its own cook-mode byte from ROCKET (10) onward.
+COOK_MODE_STEP_VERSION = 10
 PLAN_CHUNK_LIMIT = 255
 
 OUTGOING_TYPES = {
@@ -324,6 +328,102 @@ def build_session_command_body(
         + _plan_id_bytes(message_version, plan_id)
         + bytes([command & 0xFF, session_type & 0xFF, session_index & 0xFF])
     )
+
+
+def build_fetch_program_details_body(session_type: int, session_index: int) -> bytes:
+    """Ask the appliance for the program running on one session slot."""
+
+    return bytes([session_type & 0xFF, session_index & 0xFF])
+
+
+class _Reader:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.index = 0
+
+    def take(self, count: int) -> bytes:
+        end = self.index + count
+        if end > len(self.data):
+            raise ValueError("program details ended early")
+        chunk = self.data[self.index : end]
+        self.index = end
+        return chunk
+
+    def u8(self) -> int:
+        return self.take(1)[0]
+
+    def uint(self, width: int) -> int:
+        return int.from_bytes(self.take(width), "little")
+
+    def sint(self, width: int) -> int:
+        return int.from_bytes(self.take(width), "little", signed=True)
+
+
+def parse_program_details_payload(message_version: int, payload: bytes) -> dict[str, Any] | None:
+    """Decode a 0x86 reply: the program a slot is running, in the upload's own format.
+
+    The appliance hands back the packed CookProgramPayload it was given, which is
+    how the app recovers a probe target it did not set itself. Walked by its own
+    counts rather than fixed offsets, since a program from the app may carry a
+    different name, several steps, and prompts. None for anything malformed.
+    """
+
+    wide = message_version >= TLV_COMMAND_VERSION
+    reader = _Reader(payload)
+    try:
+        session_type = reader.u8()
+        session_index = reader.u8()
+        program_id = reader.take(16)
+        plan_id = reader.uint(4) if wide else reader.u8()
+        reader.take(reader.u8())  # name
+        reader.u8()  # ETA curve
+        steps = []
+        for _ in range(reader.uint(2) if wide else reader.u8()):
+            step_id = reader.uint(2) if wide else reader.u8()
+            reader.take(4)  # base duration
+            cooking_temp_dc = reader.sint(2)
+            triggers = []
+            for _ in range(reader.u8()):
+                value = reader.sint(4)
+                triggers.append({"type": reader.u8(), "value": value})
+            reader.u8()  # requirement
+            if message_version >= COOK_MODE_STEP_VERSION:
+                reader.u8()  # step cook mode
+            steps.append(
+                {
+                    "id": step_id,
+                    "cooking_temp_dc": None
+                    if cooking_temp_dc == NO_TEMPERATURE_DC
+                    else cooking_temp_dc,
+                    "triggers": triggers,
+                }
+            )
+    except ValueError:
+        return None
+    return {
+        "session_type": session_type,
+        "session_index": session_index,
+        "program_id_hex": program_id.hex(),
+        "plan_id": plan_id,
+        "steps": steps,
+    }
+
+
+def probe_target_from_program(details: dict[str, Any], step_id: int | None) -> int | None:
+    """The deci-Celsius target the app would display for a probe's program.
+
+    GetCookTargetsInfoUseCase reads the active step, falling back to the last
+    one, and takes its first probe-ceiling trigger.
+    """
+
+    steps = details.get("steps") or []
+    if not steps:
+        return None
+    step = next((row for row in steps if row["id"] == step_id), steps[-1])
+    for trigger in step["triggers"]:
+        if trigger["type"] == TRIGGER_PROBE_TEMP_CEILING:
+            return int(trigger["value"])
+    return None
 
 
 def wrap_null_session(appliance_payload: bytes, message_type: int = 0) -> bytes:

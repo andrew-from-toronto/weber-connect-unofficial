@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from .saber_frames import (
     build_probe_target_plan,
     build_session_command_body,
     build_set_cook_mode_body,
+    probe_target_from_program,
 )
 from .state import normalize_state
 from .weber_cloud import CloudConfig, WeberCloudClient
@@ -56,6 +58,10 @@ PROBE_SESSION_STATES = frozenset(
 # The app waits for REMOVE to be acknowledged before uploading; that callback
 # did not decompile, so give the appliance a moment to retire the old session.
 REMOVE_SETTLE_SECONDS = 1.5
+# How long to wait for a program readback before asking again, and how long a
+# target just sent is trusted while the appliance is still starting its session.
+PROGRAM_REQUEST_RETRY_SECONDS = 60.0
+TARGET_SETTLE_SECONDS = 30.0
 
 
 class _TransportSession(Protocol):
@@ -91,6 +97,8 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.probe_targets: dict[int, float | None] = {}
         self._probe_sessions: dict[int, dict[str, Any]] = {}
         self._next_plan_id = 1
+        self._program_asked: dict[int, tuple[tuple[Any, ...], float]] = {}
+        self._target_sent_at: dict[int, float] = {}
 
         # An appliance speaks the format it agreed during pairing, and older
         # ones never learn the newer command bodies. Keep that negotiated
@@ -178,6 +186,7 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             number = row.get("probe_number") if isinstance(row, dict) else None
             if isinstance(number, int):
                 self._probe_sessions[number] = row
+        self._reconcile_probe_targets(status.get("program_details") or {})
         self.last_successful_update = datetime.now(timezone.utc).isoformat()
         self.consecutive_failures = 0
         ir.async_delete_issue(
@@ -275,6 +284,39 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         )
 
+    def _reconcile_probe_targets(self, details_by_slot: dict[int, dict[str, Any]]) -> None:
+        """Recover each probe's target from the program the appliance says it runs.
+
+        This is what makes a target survive a restart, and follow one set or
+        cleared from the Weber app: the app reads it back the same way.
+        """
+
+        now = time.monotonic()
+        for number, row in self._probe_sessions.items():
+            if row.get("state") not in PROBE_SESSION_STATES:
+                sent = self._target_sent_at.get(number)
+                if sent is None or now - sent > TARGET_SETTLE_SECONDS:
+                    self.probe_targets[number] = None
+                continue
+            program_hex = str(row.get("program_id_hex") or "").replace(":", "").lower()
+            details = details_by_slot.get(number - 1)
+            if (
+                details is not None
+                and details.get("plan_id") == row.get("plan_id")
+                and details.get("program_id_hex") == (program_hex or "00" * 16)
+            ):
+                target = probe_target_from_program(details, row.get("step_id"))
+                if target is not None:
+                    self.probe_targets[number] = target / 10
+                continue
+            key = (program_hex, row.get("plan_id"), row.get("session_id"))
+            asked = self._program_asked.get(number)
+            if self.ble_session is not None and (
+                asked is None or asked[0] != key or now - asked[1] > PROGRAM_REQUEST_RETRY_SECONDS
+            ):
+                self._program_asked[number] = (key, now)
+                self.ble_session.request_program_details(SESSION_TYPE_PROBED, number - 1)
+
     def _plan_id_for(self, number: int) -> int:
         """Never reuse the plan id a slot is already running - the app increments too."""
 
@@ -291,7 +333,8 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         row = self._probe_sessions.get(number, {})
         if row.get("state") not in PROBE_SESSION_STATES:
             return False
-        program_hex = row.get("program_id_hex") or ""
+        # The status renders ids as colon-separated hex.
+        program_hex = str(row.get("program_id_hex") or "").replace(":", "")
         program_id = bytes.fromhex(program_hex) if len(program_hex) == 32 else PRIMITIVE_PROGRAM_ID
         await self._transport.async_send_command(
             OUTGOING_SESSION_COMMAND,
@@ -337,12 +380,14 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
         )
         self.probe_targets[number] = target_deci_celsius / 10
+        self._target_sent_at[number] = time.monotonic()
         self.async_update_listeners()
 
     async def async_clear_probe_target(self, number: int) -> None:
         """End a probe's target program, if it has one."""
 
         await self._async_remove_probe_session(number)
+        self._target_sent_at.pop(number, None)
         self.probe_targets[number] = None
         self.async_update_listeners()
 
