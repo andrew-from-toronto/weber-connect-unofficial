@@ -28,6 +28,24 @@ COOK_MODE_COMMAND_VERSION = 7
 TLV_COMMAND_VERSION = 11
 NO_TEMPERATURE_DC = -32768
 OUTGOING_SET_COOK_MODE = 0x0C
+OUTGOING_SESSION_COMMAND = 0x01
+OUTGOING_PLAN_PAYLOAD = 0x04
+
+# A probe target is a one-step "primitive" program the app uploads itself
+# (SaberMessageFactory.e): no cavity temperature, cook mode NONE, one probe
+# trigger. Those two empty fields are what keep it from touching the grill's
+# own setpoint or mode - the recipe path fills them, and must never be copied.
+PRIMITIVE_PROGRAM_ID = bytes(16)
+PRIMITIVE_PROGRAM_NAME = "Primitive"
+PRIMITIVE_STEP_ID = 2
+SESSION_TYPE_PROBED = 1
+SESSION_COMMAND_START = 2
+SESSION_COMMAND_REMOVE = 4
+TRIGGER_PROBE_TEMP_CEILING = 3
+TRIGGER_REQUIREMENT_ANY = 2
+ETA_CURVE_NONE = 0
+STEP_COOK_MODE_NONE = 0
+PLAN_CHUNK_LIMIT = 255
 
 OUTGOING_TYPES = {
     0x01: "OUTGOING_SESSION_COMMAND",
@@ -229,6 +247,83 @@ def build_set_cook_mode_body(
     if target_deci_celsius is not None:
         body += bytes([2, 2]) + encoded_target
     return body
+
+
+def _plan_id_bytes(message_version: int, plan_id: int) -> bytes:
+    if message_version >= TLV_COMMAND_VERSION:
+        return (plan_id & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes([plan_id & 0xFF])
+
+
+def build_probe_target_plan(message_version: int, target_deci_celsius: int) -> bytes:
+    """Serialize the one-step program that holds a probe until it reaches a target.
+
+    Packed fields, not TLV (CookProgramPayloadKt): name, ETA curve, steps,
+    prompts. The trigger carries deci-Celsius even though the app's model is
+    milli-Celsius - it divides by 100 on the way out.
+    """
+
+    if not -32768 <= target_deci_celsius <= 32767:
+        raise ValueError("probe target must fit a signed 16-bit deci-Celsius value")
+    wide = message_version >= TLV_COMMAND_VERSION
+    name = PRIMITIVE_PROGRAM_NAME.encode("utf-8")
+    count = (lambda n: n.to_bytes(2, "little")) if wide else (lambda n: bytes([n]))
+    step = (
+        count(PRIMITIVE_STEP_ID)
+        + (0).to_bytes(4, "little", signed=True)  # base duration, ms
+        + NO_TEMPERATURE_DC.to_bytes(2, "little", signed=True)  # no cavity target
+        + bytes([1])  # one trigger
+        + target_deci_celsius.to_bytes(4, "little", signed=True)
+        + bytes([TRIGGER_PROBE_TEMP_CEILING, TRIGGER_REQUIREMENT_ANY, STEP_COOK_MODE_NONE])
+    )
+    return bytes([len(name)]) + name + bytes([ETA_CURVE_NONE]) + count(1) + step + count(0)
+
+
+def build_plan_payload_bodies(
+    message_version: int,
+    program_id: bytes,
+    plan_id: int,
+    session_type: int,
+    session_index: int,
+    plan: bytes,
+) -> list[bytes]:
+    """Split a serialized plan into the chunked 0x04 bodies the appliance takes."""
+
+    if len(program_id) != 16:
+        raise ValueError("program id must be 16 bytes")
+    if len(plan) > PLAN_CHUNK_LIMIT:
+        # The app packs whole fields into 255-byte chunks; a one-step primitive
+        # is 28 bytes, so a longer plan means something built the wrong thing.
+        raise ValueError("plan does not fit one chunk")
+    header = program_id + _plan_id_bytes(message_version, plan_id)
+    return [header + bytes([0, session_type & 0xFF, session_index & 0xFF]) + plan]
+
+
+def build_session_command_body(
+    message_version: int,
+    program_id: bytes,
+    plan_id: int,
+    command: int,
+    session_type: int,
+    session_index: int,
+) -> bytes:
+    """Build a 0x01 session command: start, or remove, one probe's program."""
+
+    if len(program_id) != 16:
+        raise ValueError("program id must be 16 bytes")
+    if message_version >= TLV_COMMAND_VERSION:
+        return (
+            bytes([1, 1, command & 0xFF, 2, 1, session_type & 0xFF, 3, 1, session_index & 0xFF])
+            + bytes([4, 16])
+            + program_id
+            + bytes([5, 4])
+            + (plan_id & 0xFFFFFFFF).to_bytes(4, "little")
+        )
+    return (
+        program_id
+        + _plan_id_bytes(message_version, plan_id)
+        + bytes([command & 0xFF, session_type & 0xFF, session_index & 0xFF])
+    )
 
 
 def wrap_null_session(appliance_payload: bytes, message_type: int = 0) -> bytes:

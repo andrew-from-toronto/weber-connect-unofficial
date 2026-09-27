@@ -136,6 +136,9 @@
     "number": {
       "target_temperature": {
         "name": "Target temperature"
+      },
+      "probe_target": {
+        "name": "Probe {number} target"
       }
     },
     "select": {
@@ -298,6 +301,11 @@
           "no_reading": "No probe reading reported",
           "device_off": "Hub reports powered off"
         }
+      }
+    },
+    "button": {
+      "probe_target_clear": {
+        "name": "Clear probe {number} target"
       }
     }
   }

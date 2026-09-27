@@ -30,7 +30,16 @@ from .const import (
 from .options import WeberOptions
 from .saber_frames import (
     DEFAULT_MESSAGE_VERSION,
+    OUTGOING_PLAN_PAYLOAD,
+    OUTGOING_SESSION_COMMAND,
     OUTGOING_SET_COOK_MODE,
+    PRIMITIVE_PROGRAM_ID,
+    SESSION_COMMAND_REMOVE,
+    SESSION_COMMAND_START,
+    SESSION_TYPE_PROBED,
+    build_plan_payload_bodies,
+    build_probe_target_plan,
+    build_session_command_body,
     build_set_cook_mode_body,
 )
 from .state import normalize_state
@@ -39,6 +48,14 @@ from .weber_cloud_socket import WeberCloudSession
 
 _LOGGER = logging.getLogger(__name__)
 OFFLINE_FAILURE_THRESHOLD = 3
+# A probe with a program on it, as opposed to one merely plugged in (PROBED) or
+# idle: only then is there a session for REMOVE to end before a new upload.
+PROBE_SESSION_STATES = frozenset(
+    {"PRIMED", "READY", "ACTIVE", "PAUSED", "COMPLETE", "ERROR", "ACTIVE_FIXED", "PREHEAT"}
+)
+# The app waits for REMOVE to be acknowledged before uploading; that callback
+# did not decompile, so give the appliance a moment to retire the old session.
+REMOVE_SETTLE_SECONDS = 1.5
 
 
 class _TransportSession(Protocol):
@@ -68,6 +85,12 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.consecutive_failures = 0
         self.successful_updates = 0
         self.failed_updates = 0
+        # The appliance never reports a probe target as a number - only pointers
+        # into the program that holds it - so the target shown is the one this
+        # entry last sent, and a restart forgets it. Re-derivable it is not.
+        self.probe_targets: dict[int, float | None] = {}
+        self._probe_sessions: dict[int, dict[str, Any]] = {}
+        self._next_plan_id = 1
 
         # An appliance speaks the format it agreed during pairing, and older
         # ones never learn the newer command bodies. Keep that negotiated
@@ -151,6 +174,10 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         self.successful_updates += 1
         self.last_error = None
+        for row in status.get("probes") or ():
+            number = row.get("probe_number") if isinstance(row, dict) else None
+            if isinstance(number, int):
+                self._probe_sessions[number] = row
         self.last_successful_update = datetime.now(timezone.utc).isoformat()
         self.consecutive_failures = 0
         ir.async_delete_issue(
@@ -247,6 +274,77 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 target_deci_celsius,
             ),
         )
+
+    def _plan_id_for(self, number: int) -> int:
+        """Never reuse the plan id a slot is already running - the app increments too."""
+
+        current = self._probe_sessions.get(number, {}).get("plan_id")
+        plan_id = self._next_plan_id & 0xFF
+        if plan_id == current:
+            plan_id = (plan_id + 1) & 0xFF
+        self._next_plan_id = plan_id + 1
+        return plan_id
+
+    async def _async_remove_probe_session(self, number: int) -> bool:
+        """End whatever program the appliance is running on one probe slot."""
+
+        row = self._probe_sessions.get(number, {})
+        if row.get("state") not in PROBE_SESSION_STATES:
+            return False
+        program_hex = row.get("program_id_hex") or ""
+        program_id = bytes.fromhex(program_hex) if len(program_hex) == 32 else PRIMITIVE_PROGRAM_ID
+        await self._transport.async_send_command(
+            OUTGOING_SESSION_COMMAND,
+            build_session_command_body(
+                self.message_version,
+                program_id,
+                int(row.get("plan_id") or 0),
+                SESSION_COMMAND_REMOVE,
+                SESSION_TYPE_PROBED,
+                number - 1,
+            ),
+        )
+        return True
+
+    async def async_set_probe_target(self, number: int, target_deci_celsius: int) -> None:
+        """Hold one wired probe until it reaches a temperature, the way the app does.
+
+        The upload is the app's own one-step primitive: no cavity temperature
+        and cook mode NONE, so it cannot move the grill's setpoint or light it.
+        """
+
+        if await self._async_remove_probe_session(number):
+            await asyncio.sleep(REMOVE_SETTLE_SECONDS)
+        plan_id = self._plan_id_for(number)
+        for body in build_plan_payload_bodies(
+            self.message_version,
+            PRIMITIVE_PROGRAM_ID,
+            plan_id,
+            SESSION_TYPE_PROBED,
+            number - 1,
+            build_probe_target_plan(self.message_version, target_deci_celsius),
+        ):
+            await self._transport.async_send_command(OUTGOING_PLAN_PAYLOAD, body)
+        await self._transport.async_send_command(
+            OUTGOING_SESSION_COMMAND,
+            build_session_command_body(
+                self.message_version,
+                PRIMITIVE_PROGRAM_ID,
+                plan_id,
+                SESSION_COMMAND_START,
+                SESSION_TYPE_PROBED,
+                number - 1,
+            ),
+        )
+        self.probe_targets[number] = target_deci_celsius / 10
+        self.async_update_listeners()
+
+    async def async_clear_probe_target(self, number: int) -> None:
+        """End a probe's target program, if it has one."""
+
+        await self._async_remove_probe_session(number)
+        self.probe_targets[number] = None
+        self.async_update_listeners()
 
     async def async_close(self) -> None:
         """Cancel all entry work and release the selected transport."""

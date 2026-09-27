@@ -10,7 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import WeberCoordinator
-from .entity import WeberEntity
+from .entity import WeberEntity, known_probe_numbers
 from .models import WeberRuntimeData
 from .saber_frames import COOK_MODE_VALUES
 
@@ -20,6 +20,10 @@ from .saber_frames import COOK_MODE_VALUES
 FALLBACK_MIN_CELSIUS = 30.0
 FALLBACK_MAX_CELSIUS = 320.0
 FALLBACK_STEP_CELSIUS = 1.0
+# A probe target is a food doneness temperature. The appliance reports no range
+# for it on this grill (its capabilities frame carries only slot counts).
+PROBE_TARGET_MIN_CELSIUS = 10.0
+PROBE_TARGET_MAX_CELSIUS = 150.0
 
 
 async def async_setup_entry(
@@ -42,6 +46,13 @@ async def async_setup_entry(
 
     _async_add_target()
     entry.async_on_unload(coordinator.async_add_listener(_async_add_target))
+
+    # Only a Bluetooth entry can deliver one: the cloud tunnel drops commands.
+    if getattr(coordinator, "source", None) == "bluetooth":
+        async_add_entities(
+            WeberProbeTargetNumber(coordinator, entry, number)
+            for number in sorted(known_probe_numbers(hass, entry))
+        )
 
 
 class WeberTargetTemperatureNumber(WeberEntity, NumberEntity):
@@ -108,3 +119,32 @@ class WeberTargetTemperatureNumber(WeberEntity, NumberEntity):
                 "range this appliance accepts."
             )
         await self.coordinator.async_set_cook_mode(cook_mode_value, round(value * 10))
+
+
+class WeberProbeTargetNumber(WeberEntity, NumberEntity):
+    """Set the temperature one wired probe is cooking towards."""
+
+    _attr_translation_key = "probe_target"
+    _attr_device_class = NumberDeviceClass.TEMPERATURE
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_mode = NumberMode.BOX
+    _attr_native_min_value = PROBE_TARGET_MIN_CELSIUS
+    _attr_native_max_value = PROBE_TARGET_MAX_CELSIUS
+    _attr_native_step = 0.5
+
+    def __init__(self, coordinator: WeberCoordinator, entry: ConfigEntry, number: int) -> None:
+        super().__init__(coordinator, entry, f"probe_{number}_target")
+        self._number = number
+        self._attr_translation_placeholders = {"number": str(number)}
+
+    @property
+    def native_value(self) -> float | None:
+        return self.coordinator.probe_targets.get(self._number)
+
+    async def async_set_native_value(self, value: float) -> None:
+        if not PROBE_TARGET_MIN_CELSIUS <= value <= PROBE_TARGET_MAX_CELSIUS:
+            raise HomeAssistantError(
+                f"{value} °C is outside the {PROBE_TARGET_MIN_CELSIUS}-"
+                f"{PROBE_TARGET_MAX_CELSIUS} °C probe target range."
+            )
+        await self.coordinator.async_set_probe_target(self._number, round(value * 10))
