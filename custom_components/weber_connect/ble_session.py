@@ -77,6 +77,11 @@ INCOMING_PAIRING_REQUIRED = 0xF1
 INCOMING_HANDSHAKE_SUCCESS = 0xF2
 
 NONCE_LENGTH = 32
+# The session's counter is one byte. Measured 2026-09-27: roughly fifteen minutes of polling in, the
+# appliance began answering every request with 0xF0 "handshake required" while its unsolicited status kept
+# arriving, so the link looked healthy and every command was silently refused. Whatever the appliance does
+# at the wrap, a fresh handshake well before it never finds out.
+REHANDSHAKE_AT_COUNTER = 240
 HANDSHAKE_TIMEOUT = 10.0
 STATUS_TIMEOUT = 12.0
 # How long a fetch waits for replies still owed once the status is in hand.
@@ -296,6 +301,8 @@ class WeberBluetoothSession:
         # seven minutes late. Only a reply to this request is current.
         while not self._frames.empty():
             self._frames.get_nowait()
+        if self._session is not None and self._session.outgoing_counter >= REHANDSHAKE_AT_COUNTER:
+            await self._async_handshake(client)
         # Because of that, a reply that arrives after the status frame cannot be
         # left for the next fetch: it would be thrown away with the backlog. The
         # appliance does answer in that order - after a restart on 2026-09-27 the
@@ -337,6 +344,10 @@ class WeberBluetoothSession:
             awaiting.discard(type_value)
             if type_value == INCOMING_ERROR_MESSAGE:
                 raise WeberBluetoothError("The appliance rejected a Bluetooth request.")
+            if type_value == INCOMING_HANDSHAKE_REQUIRED:
+                # The session has gone out of step (a dropped frame ends it); everything sent in it is
+                # being refused. Reconnecting starts a fresh one.
+                raise WeberBluetoothError("The appliance asked for a new handshake.")
             if type_value == INCOMING_APPLIANCE_STATUS:
                 # Partial frames arrive between full ones; merging only reported
                 # values keeps one of them from blanking every hub field.

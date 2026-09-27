@@ -717,3 +717,37 @@ async def test_the_fetch_deadline_holds_against_a_stream_of_status() -> None:
     with patch.object(transport, "REPLY_GRACE", 0.0):
         status = await session._async_fetch(client)
     assert status is not None
+
+
+@pytest.mark.asyncio
+async def test_a_handshake_required_reply_ends_the_session_rather_than_being_ignored() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    client.push(
+        _reply(transport.INCOMING_HANDSHAKE_REQUIRED), _reply(transport.INCOMING_STATUS, b"")
+    )
+    with pytest.raises(WeberBluetoothError, match="new handshake"):
+        await session._async_fetch(client)
+
+
+@pytest.mark.asyncio
+async def test_the_session_is_renewed_before_its_counter_wraps() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    assert session._session is not None
+    first = session._session
+    first._outgoing_counter = transport.REHANDSHAKE_AT_COUNTER
+    session._capabilities = {"probe_count": 1}
+    client.push(
+        _reply(transport.INCOMING_HANDSHAKE_SUCCESS),
+        _reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06])),
+    )
+    assert await session._async_fetch(client) is not None
+    assert session._session is not first
+    assert session._session.outgoing_counter < transport.REHANDSHAKE_AT_COUNTER

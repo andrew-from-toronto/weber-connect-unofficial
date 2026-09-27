@@ -101,6 +101,7 @@ def _coordinator() -> tuple[Any, RecordingTransport]:
     coordinator._next_plan_id = 1
     coordinator._program_asked = {}
     coordinator._target_sent_at = {}
+    coordinator._plan_sent = {}
     coordinator.ble_session = None
     coordinator.async_update_listeners = MagicMock()
     return coordinator, transport
@@ -328,3 +329,27 @@ def test_status_keeps_only_rows_that_name_a_probe() -> None:
     ):
         coordinator._async_status({"probes": [{"probe_number": None}, {"probe_number": 2}]})
     assert list(coordinator._probe_sessions) == [2]
+
+
+def test_the_replaced_program_is_not_read_back_over_the_new_target() -> None:
+    """Measured 2026-09-27: 155 set, and the old program's 150 read back over it."""
+
+    coordinator, _transport = _coordinator()
+    coordinator.ble_session = RecordingSession()
+    coordinator._probe_sessions[1] = {
+        "state": "ACTIVE_FIXED",
+        "program_id_hex": "",
+        "plan_id": 1,
+        "step_id": 2,
+    }
+    coordinator.probe_targets[1] = 68.3
+    coordinator._plan_sent[1] = 2
+    old = parse_program_details_payload(10, DETAILS_145F)  # plan 1, 145 F
+
+    coordinator._reconcile_probe_targets({0: old})
+    assert coordinator.probe_targets[1] == 68.3
+
+    coordinator._probe_sessions[1] = {**coordinator._probe_sessions[1], "plan_id": 2}
+    coordinator._reconcile_probe_targets({0: old})
+    assert coordinator.probe_targets[1] == 68.3  # stale details for plan 1 do not match plan 2
+    assert 1 not in coordinator._plan_sent

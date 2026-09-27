@@ -99,6 +99,10 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._next_plan_id = 1
         self._program_asked: dict[int, tuple[tuple[Any, ...], float]] = {}
         self._target_sent_at: dict[int, float] = {}
+        # The plan id just uploaded to each slot, until the appliance's status shows it running. Until
+        # then the status still describes the program being replaced, and reading that back would put
+        # the old target over the one just set (measured 2026-09-27: 155 set, 150 restored).
+        self._plan_sent: dict[int, int] = {}
 
         # An appliance speaks the format it agreed during pairing, and older
         # ones never learn the newer command bodies. Keep that negotiated
@@ -298,6 +302,11 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if sent is None or now - sent > TARGET_SETTLE_SECONDS:
                     self.probe_targets[number] = None
                 continue
+            pending = self._plan_sent.get(number)
+            if pending is not None:
+                if row.get("plan_id") != pending:
+                    continue
+                del self._plan_sent[number]
             program_hex = str(row.get("program_id_hex") or "").replace(":", "").lower()
             details = details_by_slot.get(number - 1)
             if (
@@ -381,6 +390,7 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.probe_targets[number] = target_deci_celsius / 10
         self._target_sent_at[number] = time.monotonic()
+        self._plan_sent[number] = plan_id
         self.async_update_listeners()
 
     async def async_clear_probe_target(self, number: int) -> None:
@@ -388,6 +398,7 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         await self._async_remove_probe_session(number)
         self._target_sent_at.pop(number, None)
+        self._plan_sent.pop(number, None)
         self.probe_targets[number] = None
         self.async_update_listeners()
 

@@ -114,6 +114,12 @@ class JoslSecureSession:
         self._incoming_code = 0
 
     @property
+    def outgoing_counter(self) -> int:
+        """How far through its one-byte counter this session is."""
+
+        return self._outgoing_counter
+
+    @property
     def key(self) -> bytes:
         """Expose the derived key so a test can pin it. Never send it."""
 
