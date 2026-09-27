@@ -75,6 +75,8 @@ INCOMING_HANDSHAKE_SUCCESS = 0xF2
 NONCE_LENGTH = 32
 HANDSHAKE_TIMEOUT = 10.0
 STATUS_TIMEOUT = 12.0
+# How long a fetch waits for replies still owed once the status is in hand.
+REPLY_GRACE = 2.0
 STATUS_INTERVAL = 10.0
 RECONNECT_DELAYS = (1.0, 2.0, 5.0, 10.0, 30.0)
 
@@ -280,15 +282,26 @@ class WeberBluetoothSession:
         # seven minutes late. Only a reply to this request is current.
         while not self._frames.empty():
             self._frames.get_nowait()
+        # Because of that, a reply that arrives after the status frame cannot be
+        # left for the next fetch: it would be thrown away with the backlog. The
+        # appliance does answer in that order - after a restart on 2026-09-27 the
+        # appliance status and capabilities came in behind every status frame,
+        # and the device state, Wi-Fi and firmware all went blank. So the fetch
+        # waits for each reply it asked for, bounded by a short grace once the
+        # status itself is in hand.
+        awaiting = {INCOMING_APPLIANCE_STATUS}
         await self._async_write(client, OUTGOING_FETCH_APPLIANCE_STATUS)
         if not self._capabilities:
+            awaiting.add(INCOMING_APPLIANCE_CAPABILITIES)
             await self._async_write(client, OUTGOING_FETCH_APPLIANCE_CAPABILITIES)
         await self._async_write(client, OUTGOING_FETCH_STATUS)
-        while True:
-            answer = await self._async_next_payload(STATUS_TIMEOUT)
+        cook: dict[str, Any] | None = None
+        while cook is None or awaiting:
+            answer = await self._async_next_payload(STATUS_TIMEOUT if cook is None else REPLY_GRACE)
             if answer is None:
-                return None
+                break
             type_value, payload = answer
+            awaiting.discard(type_value)
             if type_value == INCOMING_ERROR_MESSAGE:
                 raise WeberBluetoothError("The appliance rejected a Bluetooth request.")
             if type_value == INCOMING_APPLIANCE_STATUS:
@@ -319,13 +332,15 @@ class WeberBluetoothSession:
                 if any(value not in (None, []) for value in decoded.values()):
                     self._capabilities = decoded
                 continue
-            if type_value == INCOMING_STATUS:
+            if type_value == INCOMING_STATUS and cook is None:
                 cook = parse_cook_session_status_payload(payload)
-                return {
-                    **cook,
-                    **{k: v for k, v in self._appliance_status.items() if k != "kind"},
-                    **self._capabilities,
-                }
+        if cook is None:
+            return None
+        return {
+            **cook,
+            **{k: v for k, v in self._appliance_status.items() if k != "kind"},
+            **self._capabilities,
+        }
 
     async def _async_connect(self) -> BleakClient:
         client = await _connect(self.hass, self.address, max_attempts=1)

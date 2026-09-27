@@ -37,6 +37,14 @@ def _reply(type_value: int, payload: bytes = b"", sequence: int = 1) -> bytes:
     return build_transport_frame(sequence, wrap_null_session(body))
 
 
+@pytest.fixture(autouse=True)
+def _short_reply_grace() -> Any:
+    """The scripted appliances never send capabilities; don't wait 2 s for them."""
+
+    with patch.object(transport, "REPLY_GRACE", 0.05):
+        yield
+
+
 def _appliance_status_payload() -> bytes:
     # tag 1 = probe count, tag 2 = burner count, in the one-byte TLV the
     # appliance-status frame uses.
@@ -248,6 +256,41 @@ async def test_a_frame_nobody_asked_for_never_delays_the_next_reply() -> None:
     assert status is not None
     assert status["target_cavity_temp_c"] == 164.0
     assert session._frames.empty()
+
+
+@pytest.mark.asyncio
+async def test_replies_that_trail_the_status_frame_are_still_merged() -> None:
+    """The real grill answered status first and the appliance status after it."""
+
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    session._capabilities = {"probe_count": 1}
+    client.push(
+        _reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06])),
+        _reply(transport.INCOMING_APPLIANCE_STATUS, _appliance_status_payload()),
+    )
+    status = await session._async_fetch(client)
+    assert status is not None
+    assert status["target_cavity_temp_c"] == 164.0
+    assert session._appliance_status
+
+
+@pytest.mark.asyncio
+async def test_a_reply_that_never_comes_costs_only_the_grace() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    session._capabilities = {"probe_count": 1}
+    client.push(_reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06])))
+    with patch.object(transport, "REPLY_GRACE", 0.01):
+        status = await session._async_fetch(client)
+    assert status is not None
+    assert status["target_cavity_temp_c"] == 164.0
 
 
 @pytest.mark.asyncio
