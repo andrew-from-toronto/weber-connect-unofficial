@@ -273,6 +273,13 @@ class WeberBluetoothSession:
     async def _async_fetch(self, client: BleakClient) -> dict[str, Any] | None:
         """Ask for one status and assemble it from the replies."""
 
+        # The appliance also pushes frames nobody asked for - repeated status,
+        # and a 0x81 notification when its setpoint changes. Each one left
+        # queued made the next fetch return a reply one cycle older, forever:
+        # measured on 2026-09-27 as a setpoint change reaching Home Assistant
+        # seven minutes late. Only a reply to this request is current.
+        while not self._frames.empty():
+            self._frames.get_nowait()
         await self._async_write(client, OUTGOING_FETCH_APPLIANCE_STATUS)
         if not self._capabilities:
             await self._async_write(client, OUTGOING_FETCH_APPLIANCE_CAPABILITIES)

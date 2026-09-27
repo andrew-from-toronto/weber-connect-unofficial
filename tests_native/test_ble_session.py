@@ -231,6 +231,26 @@ async def test_fetch_merges_appliance_status_and_capabilities() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_frame_nobody_asked_for_never_delays_the_next_reply() -> None:
+    """Unsolicited frames queued between fetches are stale, not a reply."""
+
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    # Pushed by the appliance on its own while the session sat idle.
+    session._notify(None, bytearray(_reply(transport.INCOMING_STATUS, bytes([1, 2, 0x5E, 0x06]))))
+    session._notify(None, bytearray(_reply(0x81, b"")))
+    # A notification arriving mid-fetch is skipped, not taken for the reply.
+    client.push(_reply(0x81, b""), _reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06])))
+    status = await session._async_fetch(client)
+    assert status is not None
+    assert status["target_cavity_temp_c"] == 164.0
+    assert session._frames.empty()
+
+
+@pytest.mark.asyncio
 async def test_fetch_reports_an_appliance_error_frame() -> None:
     client = FakeClient()
     session = _session(client)
