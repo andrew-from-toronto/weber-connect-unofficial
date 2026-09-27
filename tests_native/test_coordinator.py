@@ -376,6 +376,24 @@ async def test_diagnostics_are_minimal_and_redact_legacy_and_current_secrets(
     assert diagnostics["cloud_socket_last_error_type"] == "TimeoutError"
     assert "state" not in diagnostics
     assert "cloud_history_schema" not in diagnostics
+    assert diagnostics["bluetooth"] is None
+
+    link = SimpleNamespace(
+        socket_connections=3,
+        is_secure=True,
+        received_types=[0xF2, 0x83, 0x80],
+        capabilities_frames=1,
+        capabilities_shape=((1, 1), (4, 12)),
+    )
+    coordinator.ble_session = link  # type: ignore[assignment]
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)  # type: ignore[arg-type]
+    assert diagnostics["bluetooth"] == {
+        "connections": 3,
+        "secure": True,
+        "received_types": [0xF2, 0x83, 0x80],
+        "capabilities_frames": 1,
+        "capabilities_shape": [[1, 1], [4, 12]],
+    }
 
 
 def test_reconnect_marks_retained_readings_then_recovers(hass: object) -> None:

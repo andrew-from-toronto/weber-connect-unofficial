@@ -40,6 +40,7 @@ CONF_APPLIANCE_PUBLIC_KEY: Final = "appliance_public_key"
 
 CONF_CONNECTION: Final = "connection"
 CONF_CONNECTION_MODE: Final = "connection_mode"
+CONF_USE_BLUETOOTH: Final = "use_bluetooth"
 CONF_PROBES: Final = "probes"
 CONF_PROBE_NAME_PREFIX: Final = "probe_name_"
 

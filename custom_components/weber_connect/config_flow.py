@@ -23,9 +23,11 @@ from .const import (
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
     CONF_COMPANION_PUBLIC_KEY,
+    CONF_CONNECTION,
     CONF_MESSAGE_VERSION,
     CONF_PROBE_NAME_PREFIX,
     CONF_PROBES,
+    CONF_USE_BLUETOOTH,
     DOMAIN,
     WEBER_COMPANY_IDS,
 )
@@ -642,16 +644,36 @@ class OptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         current = WeberOptions.from_mapping(self.config_entry.options).as_dict()
         probes = current[CONF_PROBES]
+        connection = current[CONF_CONNECTION]
         if user_input is not None:
             # Preserve names for temporarily absent or previously discovered slots.
             probes.update(user_input.get(CONF_PROBES, {}))
+            submitted = user_input.get(CONF_CONNECTION, {})
+            if CONF_USE_BLUETOOTH in submitted:
+                connection[CONF_USE_BLUETOOTH] = bool(submitted[CONF_USE_BLUETOOTH])
             return self.async_create_entry(title="", data=current)
 
         numbers = known_probe_numbers(self.hass, self.config_entry)
+        fields: dict[Any, Any] = {}
+        # The switch only exists for an entry that can actually use it; offered
+        # without the pairing secrets it would be a control that does nothing.
+        data = self.config_entry.data
+        if data.get(CONF_COMPANION_PUBLIC_KEY) and data.get(CONF_APPLIANCE_PUBLIC_KEY):
+            fields[vol.Required(CONF_CONNECTION)] = section(
+                vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_USE_BLUETOOTH, default=connection[CONF_USE_BLUETOOTH]
+                        ): bool,
+                    }
+                ),
+                {"collapsed": False},
+            )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
+                    **fields,
                     vol.Required(CONF_PROBES): section(
                         vol.Schema(
                             {

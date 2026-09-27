@@ -430,7 +430,7 @@ async def test_recovery_menus_reset_complete_and_options(hass: object) -> None:
         "config_entry",
         new_callable=PropertyMock,
         return_value=SimpleNamespace(
-            options=WeberOptions().as_dict(), unique_id="hub", entry_id="entry"
+            options=WeberOptions().as_dict(), data={}, unique_id="hub", entry_id="entry"
         ),
     ):
         form = await options.async_step_init()

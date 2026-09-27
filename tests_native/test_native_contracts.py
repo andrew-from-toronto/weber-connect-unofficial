@@ -670,6 +670,8 @@ def test_named_probe_preserves_slot_and_single_entity_semantics() -> None:
         "probe_state": "CONNECTED",
         "probe_type": "MEAT",
         "battery_level": 87,
+        "segment_temps": None,
+        "active_events": None,
     }
     assert entity.icon == "mdi:thermometer-probe"
     coordinator.data["probe_2_temperature"] = None
@@ -701,7 +703,11 @@ def test_options_have_one_transport_choice_and_stable_probe_names() -> None:
     defaults = WeberOptions.from_mapping({})
     assert defaults.connection_mode is ConnectionMode.PHONE_AND_HOME_ASSISTANT
     assert defaults.cloud_enabled is True
+    assert defaults.use_bluetooth is True
     assert set(defaults.as_dict()) == {CONF_CONNECTION, CONF_PROBES}
+    declined = WeberOptions.from_mapping({CONF_CONNECTION: {"use_bluetooth": False}})
+    assert declined.use_bluetooth is False
+    assert declined.as_dict()[CONF_CONNECTION]["use_bluetooth"] is False
 
     configured = WeberOptions.from_mapping(
         {

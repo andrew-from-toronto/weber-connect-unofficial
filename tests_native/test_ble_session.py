@@ -474,6 +474,25 @@ async def test_fetch_absorbs_a_capabilities_frame() -> None:
     status = await session._async_fetch(client)
     assert status is not None
     assert session._capabilities["probe_count"] == 2
+    assert session.capabilities_frames == 1
+    assert session.capabilities_shape == ((1, 1), (3, 1))
+
+
+@pytest.mark.asyncio
+async def test_a_capabilities_frame_that_says_nothing_is_asked_for_again() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    client.push(
+        _reply(transport.INCOMING_APPLIANCE_CAPABILITIES, bytes([99, 2, 0, 0])),
+        _reply(transport.INCOMING_STATUS, b""),
+    )
+    assert await session._async_fetch(client) is not None
+    assert session._capabilities == {}
+    assert session.capabilities_frames == 1
+    assert session.capabilities_shape == ((99, 2),)
 
 
 @pytest.mark.asyncio
@@ -582,3 +601,15 @@ def test_coordinator_selects_bluetooth_only_with_stored_session_material() -> No
         assert local.source == "bluetooth"
         assert local.ble_session is not None
         assert local.ble_session.address == ADDRESS
+
+        # The option is a way back to the cloud that keeps the secrets.
+        declined = _entry(
+            **{
+                CONF_COMPANION_PUBLIC_KEY: "33" * 64,
+                CONF_APPLIANCE_PUBLIC_KEY: "44" * 64,
+            }
+        )
+        declined.options = {"connection": {"use_bluetooth": False}}
+        fallback = coordinator_module.WeberCoordinator(hass, declined)  # type: ignore[arg-type]
+        assert fallback.source == "cloud"
+        assert fallback.ble_session is None

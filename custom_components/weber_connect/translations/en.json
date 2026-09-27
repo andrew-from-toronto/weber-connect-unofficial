@@ -71,14 +71,14 @@
       }
     },
     "create_entry": {
-      "default": "**Both setup steps are complete.** Turn Bluetooth back on and reopen the Weber app. The phone may use the hub's Bluetooth connection while Home Assistant continues receiving cook data online."
+      "default": "**Both setup steps are complete.** Home Assistant now connects to the hub over Bluetooth, and the hub accepts only one Bluetooth connection, so leave Bluetooth off for the Weber app. The app can still reach the hub over Wi-Fi. To give the Bluetooth connection back to the phone, turn off **Connect over Bluetooth** in this integration's options."
     },
     "abort": {
       "already_configured": "This Weber hub is already configured.",
       "already_in_progress": "Setup is already open for this Weber hub. Close this window and continue the existing setup.",
-      "reauth_successful": "Connection replaced. Turn Bluetooth back on and reopen the Weber app. Your existing device and entities have been kept.",
+      "reauth_successful": "Connection replaced. Your existing device and entities have been kept. Home Assistant now connects to the hub over Bluetooth, which the hub allows only one device to do, so leave Bluetooth off for the Weber app. To return to Weber Cloud, turn off **Connect over Bluetooth** in this integration's options.",
       "wrong_hub": "The paired appliance does not match this integration. Nothing was changed. Retry with the original hub.",
-      "reconfigure_successful": "Connection replaced. Turn Bluetooth back on and reopen the Weber app. Your existing device and entities have been kept."
+      "reconfigure_successful": "Connection replaced. Your existing device and entities have been kept. Home Assistant now connects to the hub over Bluetooth, which the hub allows only one device to do, so leave Bluetooth off for the Weber app. To return to Weber Cloud, turn off **Connect over Bluetooth** in this integration's options."
     }
   },
   "options": {
@@ -87,6 +87,13 @@
         "title": "Weber Connect settings",
         "description": "Give each probe a food name, such as Brisket. Its physical probe number stays visible. Home Assistant receives readings through Weber Cloud while you continue using the Weber app.",
         "sections": {
+          "connection": {
+            "name": "Connection",
+            "description": "This hub was paired for a direct Bluetooth connection. Turn this off to read through Weber Cloud instead, without pairing again. Changing the grill's settings needs Bluetooth; Weber Cloud only reads.",
+            "data": {
+              "use_bluetooth": "Connect over Bluetooth"
+            }
+          },
           "probes": {
             "name": "Probe names",
             "description": "Optional nicknames appear beside the permanent probe number.",

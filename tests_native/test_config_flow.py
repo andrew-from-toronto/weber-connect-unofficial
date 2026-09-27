@@ -23,8 +23,11 @@ from custom_components.weber_connect.bluetooth import WeberBluetoothError
 from custom_components.weber_connect.config_flow import WeberConnectConfigFlow
 from custom_components.weber_connect.const import (
     CONF_APPLIANCE_ID,
+    CONF_APPLIANCE_PUBLIC_KEY,
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
+    CONF_COMPANION_PUBLIC_KEY,
+    CONF_CONNECTION,
     CONF_PROBES,
     DOMAIN,
 )
@@ -498,6 +501,34 @@ async def test_options_use_registered_slots_and_preserve_hidden_names(hass: Any)
         await hass.async_block_till_done()
     saved = WeberOptions.from_mapping(entry.options)
     assert saved.probe_names == ("Brisket", "", "Hidden", "Spare")
+
+
+async def test_options_offer_bluetooth_switch_only_to_entries_paired_for_it(hass: Any) -> None:
+    cloud_entry = MockConfigEntry(domain=DOMAIN, unique_id="cloud-hub", data={})
+    cloud_entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(cloud_entry.entry_id)
+    assert CONF_CONNECTION not in result["data_schema"].schema
+    hass.config_entries.options.async_abort(result["flow_id"])
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=ADDRESS,
+        data={CONF_COMPANION_PUBLIC_KEY: "33" * 64, CONF_APPLIANCE_PUBLIC_KEY: "44" * 64},
+        options=WeberOptions(probe_names=("Brisket", "", "", "")).as_dict(),
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    validated = result["data_schema"]({CONF_CONNECTION: {}, CONF_PROBES: {}})
+    assert validated[CONF_CONNECTION] == {"use_bluetooth": True}
+    with patch.object(hass.config_entries, "async_reload", new=AsyncMock(return_value=True)):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {CONF_CONNECTION: {"use_bluetooth": False}, CONF_PROBES: {}},
+        )
+        await hass.async_block_till_done()
+    saved = WeberOptions.from_mapping(entry.options)
+    assert saved.use_bluetooth is False
+    assert saved.probe_names == ("Brisket", "", "", "")
 
 
 @pytest.mark.parametrize(

@@ -53,6 +53,7 @@ from .saber_frames import (
     parse_appliance_capabilities_payload,
     parse_appliance_status_payload,
     parse_cook_session_status_payload,
+    parse_tlv,
     wrap_null_session,
 )
 
@@ -141,6 +142,8 @@ class WeberBluetoothSession:
         self._wake = asyncio.Event()
         self._appliance_status: dict[str, Any] = {}
         self._capabilities: dict[str, Any] = {}
+        self.capabilities_frames = 0
+        self.capabilities_shape: tuple[tuple[int, int], ...] = ()
         self._closing = False
 
     @property
@@ -293,11 +296,21 @@ class WeberBluetoothSession:
                 )
                 continue
             if type_value == INCOMING_APPLIANCE_CAPABILITIES:
-                self._capabilities = {
+                self.capabilities_frames += 1
+                self.capabilities_shape = tuple(
+                    (tag, len(value))
+                    for tag, values in sorted(parse_tlv(payload).items())
+                    for value in values
+                )
+                decoded = {
                     key: value
                     for key, value in parse_appliance_capabilities_payload(payload).items()
                     if key != "kind"
                 }
+                # Cached only once it says something: a frame that decodes to
+                # nothing would otherwise stop the fetch being asked again.
+                if any(value not in (None, []) for value in decoded.values()):
+                    self._capabilities = decoded
                 continue
             if type_value == INCOMING_STATUS:
                 cook = parse_cook_session_status_payload(payload)

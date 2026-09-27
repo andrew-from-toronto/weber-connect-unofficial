@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 
+from .ble_session import WeberBluetoothSession
 from .const import (
     CONF_APPLIANCE_ID,
     CONF_CLOUD_PASSWORD,
@@ -123,4 +124,24 @@ async def async_get_config_entry_diagnostics(
         "cloud_socket_connections": coordinator.cloud_session.socket_connections,
         "cloud_socket_fast_recoveries": coordinator.cloud_session.fast_recoveries,
         "cloud_socket_last_error_type": coordinator.cloud_session.last_error_type,
+        "bluetooth": _bluetooth_diagnostics(coordinator.ble_session),
+    }
+
+
+def _bluetooth_diagnostics(session: WeberBluetoothSession | None) -> dict[str, Any] | None:
+    """Describe the local link without any value it carries.
+
+    The capabilities frame holds the grill's serial number, so only its shape -
+    which tags arrived and how long each was - is reported. That is enough to
+    tell a frame that never arrives from one this decoder misreads.
+    """
+
+    if session is None:
+        return None
+    return {
+        "connections": session.socket_connections,
+        "secure": session.is_secure,
+        "received_types": list(session.received_types),
+        "capabilities_frames": session.capabilities_frames,
+        "capabilities_shape": [list(pair) for pair in session.capabilities_shape],
     }

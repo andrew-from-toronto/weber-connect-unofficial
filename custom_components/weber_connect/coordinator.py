@@ -90,11 +90,13 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # than by an option a user could set without the secrets behind it.
         # Re-pairing is what opts an appliance into local operation, and it
         # costs the phone app its Bluetooth slot: an appliance accepts one owner.
+        # The one option is a way *back*: it keeps the secrets and reads the
+        # cloud, so abandoning the local link never needs the entry deleted.
         companion_key = str(entry.data.get(CONF_COMPANION_PUBLIC_KEY, ""))
         appliance_key = str(entry.data.get(CONF_APPLIANCE_PUBLIC_KEY, ""))
         address = str(entry.data.get(CONF_ADDRESS, ""))
         self.ble_session: WeberBluetoothSession | None = None
-        if companion_key and appliance_key and address:
+        if companion_key and appliance_key and address and self.options.use_bluetooth:
             self.ble_session = WeberBluetoothSession(
                 hass,
                 address,
