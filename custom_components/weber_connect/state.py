@@ -275,4 +275,16 @@ def normalize_state(
         if activity_reported
         else None
     )
+    # Over Bluetooth the appliance leaves device state out of the partial status frames it sends between
+    # full ones, and those are merged onto the last full frame - so a grill told to shut down went on
+    # reading "active" for the whole cool-down, and only a reconnect showed "shutting_down" (2026-09-27,
+    # twice). What it does report at once is the cook mode dropping to unknown with no target while the
+    # pit is still hot: that is a shutdown, whoever started it.
+    if (
+        state["device_state"] == "active"
+        and state["cook_mode"] in (None, "unknown")
+        and state.get("target_grill_temperature") is None
+        and state.get("grill_temperature") is not None
+    ):
+        state["device_state"] = "shutting_down"
     return state

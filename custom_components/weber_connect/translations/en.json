@@ -306,6 +306,9 @@
     "button": {
       "probe_target_clear": {
         "name": "Clear probe {number} target"
+      },
+      "shutdown": {
+        "name": "Shut down"
       }
     }
   }

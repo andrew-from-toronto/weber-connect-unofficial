@@ -166,6 +166,27 @@ def test_normalized_state_prefers_actual_cavity_temp_then_display_fallback() -> 
     assert actual_state["grill_temperature"] == 94.0
 
 
+def test_a_shutdown_reads_as_shutting_down_even_while_the_device_still_says_active() -> None:
+    state = normalize_state(
+        {"device_state": "active", "cook_mode": "unknown", "actual_cavity_temp_c": 265.0},
+        source="bluetooth",
+        connected=True,
+    )
+    assert state["device_state"] == "shutting_down"
+    assert state["cooking"] is False
+    lit = normalize_state(
+        {
+            "device_state": "active",
+            "cook_mode": "grill",
+            "actual_cavity_temp_c": 265.0,
+            "target_cavity_temp_c": 176.0,
+        },
+        source="bluetooth",
+        connected=True,
+    )
+    assert lit["device_state"] == "active"
+
+
 @pytest.mark.parametrize(
     ("device_state", "cook_mode", "expected"),
     [

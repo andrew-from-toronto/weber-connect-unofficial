@@ -12,6 +12,7 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.weber_connect import coordinator as coordinator_module
 from custom_components.weber_connect.button import (
     WeberClearProbeTargetButton,
+    WeberShutdownButton,
 )
 from custom_components.weber_connect.button import (
     async_setup_entry as async_setup_button,
@@ -190,7 +191,7 @@ async def test_probe_target_controls_exist_only_on_a_bluetooth_entry(source: str
     probe_numbers = [entity for entity in numbers if isinstance(entity, WeberProbeTargetNumber)]
     if source == "bluetooth":
         assert len(probe_numbers) == 2
-        assert len(buttons) == 2
+        assert len(buttons) == 3
     else:
         assert probe_numbers == []
         assert buttons == []
@@ -353,3 +354,25 @@ def test_the_replaced_program_is_not_read_back_over_the_new_target() -> None:
     coordinator._reconcile_probe_targets({0: old})
     assert coordinator.probe_targets[1] == 68.3  # stale details for plan 1 do not match plan 2
     assert 1 not in coordinator._plan_sent
+
+
+async def test_shutdown_sends_mode_none_with_no_target_and_only_to_a_lit_grill() -> None:
+    coordinator = _entity_coordinator("bluetooth")
+    coordinator.async_set_cook_mode = AsyncMock()
+    button = WeberShutdownButton(coordinator, _entry())  # type: ignore[arg-type]
+
+    coordinator.data = {"device_state": "idle"}
+    with pytest.raises(HomeAssistantError, match="not lit"):
+        await button.async_press()
+    coordinator.async_set_cook_mode.assert_not_awaited()
+
+    coordinator.data = {"device_state": "active"}
+    await button.async_press()
+    coordinator.async_set_cook_mode.assert_awaited_once_with(0)
+
+
+def test_shutdown_is_the_apps_own_bytes() -> None:
+    # ShutDownGrillAction: SetCookModeMessage(v10, NONE, no target) -> 00 00 80.
+    from custom_components.weber_connect.saber_frames import build_set_cook_mode_body
+
+    assert build_set_cook_mode_body(10, 0, None) == bytes([0x00, 0x00, 0x80])
