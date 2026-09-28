@@ -133,7 +133,20 @@ class WeberCloudClient:
         self.timeout = timeout
         self._token: str | None = None
         self._token_expiry = 0.0
-        self._opener = urllib.request.build_opener(_SameOriginRedirectHandler())
+        self._opener_instance: urllib.request.OpenerDirector | None = None
+
+    @property
+    def _opener(self) -> urllib.request.OpenerDirector:
+        """Built on first use rather than in __init__.
+
+        The client is constructed on Home Assistant's event loop, and building an opener loads the
+        system's CA certificates from disk, which HA reports as a blocking call. Every request already
+        runs in the executor, so the first one pays for it there.
+        """
+
+        if self._opener_instance is None:
+            self._opener_instance = urllib.request.build_opener(_SameOriginRedirectHandler())
+        return self._opener_instance
 
     @property
     def messaging_host(self) -> str:

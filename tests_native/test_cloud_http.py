@@ -285,3 +285,11 @@ def test_refresh_threshold_and_close_invalidate_cached_credentials() -> None:
         client.close()
         assert client.token_needs_refresh()
         assert client._token_expiry == 0
+
+
+def test_the_opener_is_built_on_first_request_not_on_the_event_loop() -> None:
+    client = WeberCloudClient(CloudConfig(DEVICE_ID, "password"))
+    assert client._opener_instance is None
+
+    opener = client._opener
+    assert client._opener is opener

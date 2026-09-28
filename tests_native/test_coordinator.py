@@ -16,6 +16,7 @@ from custom_components.weber_connect.const import (
     CONF_COMPANION_ID,
     CONF_CONNECTION,
     CONF_CONNECTION_MODE,
+    DOMAIN,
 )
 from custom_components.weber_connect.coordinator import WeberCoordinator
 from custom_components.weber_connect.diagnostics import async_get_config_entry_diagnostics
@@ -203,7 +204,7 @@ def test_cloud_outage_never_creates_a_repair(hass: object) -> None:
 
 def test_status_updates_device_firmware_metadata(hass: object) -> None:
     coordinator, _transport = _coordinator(hass, cloud=True)
-    registry = MagicMock()
+    registry = MagicMock(spec=["async_get_device", "async_update_device"])
     registry.async_get_device.return_value = SimpleNamespace(id="device-id")
 
     with patch.object(coordinator_module.dr, "async_get", return_value=registry):
@@ -238,7 +239,7 @@ def test_status_updates_only_reported_device_version(
     expected_update: dict[str, str],
 ) -> None:
     coordinator, _transport = _coordinator(hass, cloud=True)
-    registry = MagicMock()
+    registry = MagicMock(spec=["async_get_device", "async_update_device"])
     registry.async_get_device.return_value = SimpleNamespace(id="device-id")
 
     with patch.object(coordinator_module.dr, "async_get", return_value=registry):
@@ -457,3 +458,16 @@ def test_error_defense_tolerates_absent_cloud_session(hass: object) -> None:
     assert coordinator.last_error == "session unavailable"
     assert coordinator.data["reading_status"] == "waiting"
     issue.assert_not_called()
+
+
+def test_device_lookup_is_scoped_to_the_entry_where_home_assistant_supports_it() -> None:
+    scoped = MagicMock(spec=["async_get_device_by_identifier", "async_get_device"])
+    scoped.async_get_device_by_identifier.return_value = "device"
+    assert coordinator_module._device_by_identifier(scoped, (DOMAIN, "grill"), "entry") == "device"
+    scoped.async_get_device_by_identifier.assert_called_once_with((DOMAIN, "grill"), "entry")
+    scoped.async_get_device.assert_not_called()
+
+    legacy = MagicMock(spec=["async_get_device"])
+    legacy.async_get_device.return_value = "legacy"
+    assert coordinator_module._device_by_identifier(legacy, (DOMAIN, "grill"), "entry") == "legacy"
+    legacy.async_get_device.assert_called_once_with(identifiers={(DOMAIN, "grill")})

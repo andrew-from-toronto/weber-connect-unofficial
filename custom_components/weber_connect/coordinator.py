@@ -64,6 +64,24 @@ PROGRAM_REQUEST_RETRY_SECONDS = 60.0
 TARGET_SETTLE_SECONDS = 30.0
 
 
+def _device_by_identifier(
+    registry: dr.DeviceRegistry, identifier: tuple[str, str], config_entry_id: str
+) -> dr.DeviceEntry | None:
+    """This entry's device, by identifier.
+
+    HA 2026.9 deprecated ``async_get_device`` because identifiers are no longer unique across config
+    entries; its replacement is scoped to one entry, which is what this lookup always meant. Older HA
+    has only the old call.
+    """
+
+    by_identifier: Callable[[tuple[str, str], str], dr.DeviceEntry | None] | None = getattr(
+        registry, "async_get_device_by_identifier", None
+    )
+    if by_identifier is not None:
+        return by_identifier(identifier, config_entry_id)
+    return registry.async_get_device(identifiers={identifier})
+
+
 class _TransportSession(Protocol):
     async def async_run(
         self,
@@ -208,7 +226,7 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         identity = self.entry.unique_id or self.entry.entry_id
         device_registry = dr.async_get(self.hass)
-        device = device_registry.async_get_device(identifiers={(DOMAIN, identity)})
+        device = _device_by_identifier(device_registry, (DOMAIN, identity), self.entry.entry_id)
         software_version = normalized.get("software_version")
         hardware_version = normalized.get("hardware_version")
         if device is not None and software_version is not None and hardware_version is not None:
