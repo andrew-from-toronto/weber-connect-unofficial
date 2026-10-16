@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -20,6 +20,12 @@ class PairingResult:
 
     message_version: int
     appliance_id: str
+    # The appliance's half of the material a local secure session is derived
+    # from. It is offered exactly once, in the pairing response, so an entry
+    # created without it can never use the local link until the user pairs
+    # again. Empty for entries that predate local control. Keyword-only so
+    # SiLabsPairingResult can keep extending this with required fields.
+    appliance_public_key: str = field(default="", kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

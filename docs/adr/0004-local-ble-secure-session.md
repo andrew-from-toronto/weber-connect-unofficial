@@ -1,10 +1,11 @@
-# ADR 0004: Local Bluetooth command and control
+# ADR 0004: Local Bluetooth secure session
 
 ## Status
 
-Proposed. The session construction is implemented and verified
-(`custom_components/weber_connect/josl_session.py`); the transport that would
-use it is not written.
+Implemented, and unverified against hardware. The session construction
+(`josl_session.py`), the local read transport (`ble_session.py`), private
+storage of the session keys and the coordinator wiring are all in place and
+covered by tests. No part of it has yet exchanged a frame with a real appliance.
 
 ## Context
 
@@ -61,42 +62,56 @@ session, and only the command path does.
 
 ## Decision
 
-Treat the local Bluetooth path as the route for command and control, and keep
-the session implementation separate from the transport that will use it.
+Read a Saber appliance over the local secure session when the entry holds the
+material for it. Commands travel inside the same session; they are left to a
+follow-up so the read path can be judged on its own.
 
-`josl_session.py` is committed on its own because it is verifiable without an
-appliance and the transport is not. Its frames were compared byte for byte
-against `libjsecclient.so` over 36000 wraps spanning both body parities, the
-plaintext gate, passthrough mode and counter rollover, with zero differences;
-the vectors in `tests_native/test_josl_session.py` are that library's output.
+`josl_session.py` carries the session construction. Its frames were compared
+byte for byte against `libjsecclient.so` over 36000 wraps spanning both body
+parities, the plaintext gate, passthrough mode and counter rollover, with zero
+differences; the vectors in `tests_native/test_josl_session.py` are that
+library's output rather than this implementation's.
 
-ADR 0003's conclusion stands unchanged for *telemetry*: a local status frame is
-still unauthenticated, still forgeable by a nearby peer, and is not a basis for
-publishing temperatures. Nothing here argues for reinstating `home_assistant_only`
-reading. A command we *send* is a different question - it is authenticated by the
-session, and its counter makes it unreplayable.
+`ble_session.py` is the transport: connect, greet with `0x70` and a fresh
+32-byte nonce, derive the session from the answer, then fetch inside it.
+Reading is not a lesser capability than commanding here - the app marks the
+status fetches `requiresEncryption` too - so a local link needs the session
+either way.
+
+**The transport is chosen by what the entry stores, not by an option.** The
+session material only exists if the user paired after this change, and an option
+offering local operation without the secrets behind it would be a setting that
+silently does nothing. Re-pairing is the opt-in. The cost is real and should be
+stated where a user will meet it: an appliance accepts one Bluetooth owner at a
+time, so a locally-read grill is one the phone app cannot reach.
+
+ADR 0003's conclusion stands unchanged for telemetry frames themselves: a status
+frame is still unauthenticated and still forgeable by whatever peer holds the
+connection. What changed is that the *peer* can now be authenticated, because
+the appliance only answers a fetch it could decrypt. The transport therefore
+publishes only what arrives in reply to its own encrypted request, on a link
+whose handshake succeeded. Unsolicited local telemetry is still not listened to,
+and `home_assistant_only` is not reinstated.
+
+**The session keys stay out of the config entry.** Both halves go in the
+private pairing store (`pairing_storage.py`) beside SiLabs records, tagged by
+family, and the entry holds only the reference - so deleting or re-pairing the
+entry retires them the same way, and the release validator's rule that this
+material has no persisted constant stands. A record that will not load leaves
+the entry on the cloud rather than dead. The companion private key stays
+transient - nothing derives anything from it.
 
 ## Consequences
 
-Not yet done, in dependency order:
+- **Existing installations keep using the cloud** and are unaffected. The
+  appliance offers its half of the material exactly once, during pairing, so
+  there is no migration: adopting the local link means pairing again.
+- **A shared secret is now stored.** It lives in the private (0600) pairing
+  store, never in the config entry, and diagnostics redact it by name.
+- The Saber local link is a third transport behind `_TransportSession`, beside
+  the cloud socket and the portable probe session.
 
-1. **Pairing must keep both public keys.** `async_pair` currently parses the
-   appliance's 64-byte public key out of the pairing response and discards it,
-   and the companion public key it generated is not stored either. Both are
-   required to derive a session key, so this is the blocking change - and it
-   means **an existing installation has to re-pair**, because the material was
-   never written down. Storing them makes the config entry hold a shared secret;
-   it belongs with the cloud password, not in diagnostics.
-2. **A Bluetooth transport.** `WeberCoordinator` already owns exactly one
-   `_TransportSession`, so the shape exists. The connection must send the `0x70`
-   handshake greeting with a fresh 32-byte nonce, derive the session from the
-   response, and wrap outgoing commands. The appliance accepts one BLE owner at
-   a time, so this competes with the phone app.
-3. **A decision about which transport reads.** Local commands plus cloud
-   telemetry is coherent (and keeps ADR 0003 intact) but holds two connections.
-
-Untested against hardware, and worth saying explicitly: the appliance's
-acceptance of a companion-originated `0x0C` over BLE has not been observed. It
-is what the app does, but the same assumption about the cloud path proved wrong.
-The first real test should be a setpoint change on a lit grill with a person
-watching it.
+**Nothing here has touched a real appliance.** Every test drives a fake GATT
+client, so what is proven is that the implementation does what this document
+says - not that the appliance agrees. The claim that matters is that a paired
+companion can open a session over BLE and have an encrypted fetch answered.

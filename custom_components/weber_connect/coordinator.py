@@ -16,6 +16,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
+from .ble_session import BleSessionKeys, WeberBluetoothSession
 from .bluetooth import WeberBluetoothError, async_reconnect_silabs
 from .const import (
     CLOUD_OFFLINE_RETAINED_KEYS,
@@ -23,13 +24,16 @@ from .const import (
     CONF_CAPABILITIES,
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
+    CONF_MESSAGE_VERSION,
     CONF_MODEL_ID,
     CONF_PAIRING_KEY_REF,
     CONF_TRANSPORT_FAMILY,
     DOMAIN,
 )
 from .options import WeberOptions
+from .pairing_storage import SaberSessionCredentials
 from .portable import PortableSession
+from .saber_frames import DEFAULT_MESSAGE_VERSION
 from .state import normalize_state
 from .support import SupportEvent, SupportJournal
 from .weber_cloud import CloudConfig, WeberCloudClient
@@ -54,12 +58,15 @@ class _TransportSession(Protocol):
 class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Own one transport and publish its decoded appliance status."""
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        saber_session: SaberSessionCredentials | None = None,
+    ) -> None:
         self.entry = entry
         self.options = WeberOptions.from_mapping(entry.options)
-        self.source = (
-            "bluetooth" if entry.data.get(CONF_TRANSPORT_FAMILY) == "portable" else "cloud"
-        )
+        self.source = "cloud"
         self._transport_task: asyncio.Task[None] | None = None
         self._capability_task: asyncio.Task[None] | None = None
         self.support_journal = SupportJournal()
@@ -69,13 +76,38 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.successful_updates = 0
         self.failed_updates = 0
 
+        # An appliance speaks the format it agreed during pairing, and older
+        # ones never learn the newer bodies. Keep that negotiated version
+        # rather than assuming the newest the app can emit.
+        self.message_version = int(entry.data.get(CONF_MESSAGE_VERSION, DEFAULT_MESSAGE_VERSION))
+
         self.cloud_client: WeberCloudClient | None = None
         self.cloud_session: WeberCloudSession | None = None
+        self.ble_session: WeberBluetoothSession | None = None
         self._transport: _TransportSession
-        if self.source == "bluetooth":
+        if entry.data.get(CONF_TRANSPORT_FAMILY) == "portable":
+            self.source = "bluetooth"
             self._transport = PortableSession(
                 hass, str(entry.data[CONF_ADDRESS]), int(entry.data[CONF_MODEL_ID])
             )
+        elif saber_session is not None and entry.data.get(CONF_ADDRESS):
+            # A Saber entry paired before local reads existed never stored the
+            # session keys, and the appliance offers its half only during
+            # pairing - so the transport is chosen by what the entry actually
+            # holds rather than by an option a user could set without the
+            # secrets behind it. Re-pairing is what opts an appliance in, and it
+            # costs the phone app its Bluetooth slot: an appliance accepts one owner.
+            self.source = "bluetooth"
+            self.ble_session = WeberBluetoothSession(
+                hass,
+                str(entry.data[CONF_ADDRESS]),
+                str(entry.data[CONF_COMPANION_ID]),
+                BleSessionKeys(
+                    saber_session.companion_public_key, saber_session.appliance_public_key
+                ),
+                self.message_version,
+            )
+            self._transport = self.ble_session
         else:
             appliance_id = str(entry.data[CONF_APPLIANCE_ID])
             config = CloudConfig.from_mapping(

@@ -312,9 +312,14 @@ def check_privacy_and_scope() -> None:
     if "async_ble_device_from_address" in (INTEGRATION / "weber_cloud.py").read_text():
         fail("cloud code must not own Bluetooth adapter selection")
     models = (INTEGRATION / "models.py").read_text(encoding="utf-8")
-    for removed in ("private_key", "appliance_public_key", "verification_code"):
+    # `appliance_public_key` left this list when it stopped being unused: the
+    # pairing result is the only place it is ever offered. The other two are
+    # still carried by nothing and must stay out.
+    for removed in ("private_key", "verification_code"):
         if removed in models:
             fail(f"unused pairing field must not remain in runtime models: {removed}")
+    if "appliance_public_key" not in models:
+        fail("the pairing result must carry the appliance session key")
     cloud_client = (INTEGRATION / "weber_cloud.py").read_text(encoding="utf-8")
     if "def associate(" in cloud_client:
         fail("obsolete manual cloud-association endpoint must not ship")

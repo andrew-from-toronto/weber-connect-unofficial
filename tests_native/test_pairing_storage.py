@@ -308,3 +308,107 @@ async def test_real_ha_private_storage_permissions_and_reload(
     assert reloaded.keys.private_scalar == record.keys.private_scalar
     await store.async_remove()
     assert not path.exists()
+
+
+def saber_credentials(
+    companion_id: bytes = bytes(range(16)),
+    appliance_id: bytes = bytes(range(16, 32)),
+    companion_public_key: bytes = bytes([0x33]) * 64,
+    appliance_public_key: bytes = bytes([0x44]) * 64,
+) -> pairing_storage.SaberSessionCredentials:
+    return pairing_storage.SaberSessionCredentials(
+        companion_id, appliance_id, companion_public_key, appliance_public_key
+    )
+
+
+@pytest.mark.asyncio
+async def test_saber_session_round_trips_beside_silabs_records() -> None:
+    record = saber_credentials()
+    reference = record.companion_id.hex()
+    store = pairing_storage.PairingKeyStore(object(), reference)  # type: ignore[arg-type]
+    await store.async_save(record)
+
+    assert MemoryStore.records[f"weber_connect.pairing.{reference}"]["family"] == "saber"
+    reloaded = await store.async_load_saber(record.appliance_id.hex())
+    assert reloaded == record
+    # A Saber record is never mistaken for SiLabs keys.
+    with pytest.raises(SiLabsSecurityError, match="missing or invalid"):
+        await store.async_load(record.appliance_id.hex())
+    assert record.companion_public_key.hex() not in repr(record)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        saber_credentials(companion_id=bytes(15)),
+        saber_credentials(appliance_public_key=bytes(63)),
+    ],
+)
+def test_saber_save_rejects_malformed_material(
+    record: pairing_storage.SaberSessionCredentials,
+) -> None:
+    store = pairing_storage.PairingKeyStore(object(), "0" * 32)  # type: ignore[arg-type]
+    with pytest.raises(SiLabsSecurityError, match="invalid"):
+        asyncio.run(store.async_save(record))
+    assert MemoryStore.records == {}
+
+
+@pytest.mark.parametrize(
+    ("stored", "appliance_id"),
+    [
+        (None, bytes(range(16, 32)).hex()),
+        ("silabs", bytes(range(16, 32)).hex()),
+        ("saber", "00" * 16),
+        ("corrupt", bytes(range(16, 32)).hex()),
+    ],
+)
+@pytest.mark.asyncio
+async def test_saber_load_rejects_missing_foreign_or_mismatched_records(
+    stored: str | None, appliance_id: str
+) -> None:
+    reference = bytes(range(16)).hex()
+    store = pairing_storage.PairingKeyStore(object(), reference)  # type: ignore[arg-type]
+    if stored == "silabs":
+        await store.async_save(credentials())
+    elif stored is not None:
+        await store.async_save(saber_credentials())
+        if stored == "corrupt":
+            MemoryStore.records[f"weber_connect.pairing.{reference}"]["appliance_public_key"] = "zz"
+
+    with pytest.raises(SiLabsSecurityError, match="Saber pairing is missing or invalid"):
+        await store.async_load_saber(appliance_id)
+
+
+@pytest.mark.asyncio
+async def test_setup_loads_saber_keys_only_for_a_saber_entry_that_has_them() -> None:
+    from custom_components.weber_connect import _async_load_saber_session
+    from custom_components.weber_connect.const import CONF_APPLIANCE_ID, CONF_TRANSPORT_FAMILY
+
+    record = saber_credentials()
+    reference = record.companion_id.hex()
+    await pairing_storage.PairingKeyStore(object(), reference).async_save(record)  # type: ignore[arg-type]
+
+    def entry(**data: Any) -> Any:
+        return SimpleNamespace(data={CONF_APPLIANCE_ID: record.appliance_id.hex(), **data})
+
+    hass: Any = object()
+    assert await _async_load_saber_session(hass, entry()) is None
+    assert (
+        await _async_load_saber_session(hass, entry(**{CONF_PAIRING_KEY_REF: reference})) == record
+    )
+    assert (
+        await _async_load_saber_session(
+            hass, entry(**{CONF_PAIRING_KEY_REF: reference, CONF_TRANSPORT_FAMILY: "saber"})
+        )
+        == record
+    )
+    assert (
+        await _async_load_saber_session(
+            hass,
+            entry(**{CONF_PAIRING_KEY_REF: reference, CONF_TRANSPORT_FAMILY: "silabs_appliance"}),
+        )
+        is None
+    )
+    # A record that no longer loads leaves the entry on the cloud rather than dead.
+    MemoryStore.records.clear()
+    assert await _async_load_saber_session(hass, entry(**{CONF_PAIRING_KEY_REF: reference})) is None

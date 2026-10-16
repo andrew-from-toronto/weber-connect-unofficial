@@ -502,6 +502,47 @@ async def test_saber_entry_completion_does_not_write_silabs_key_storage(hass: An
     save.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_saber_entry_keeps_its_session_keys_in_private_storage(hass: Any) -> None:
+    flow = _complete_flow(
+        hass,
+        source=config_entries.SOURCE_USER,
+        entry_data={CONF_ADDRESS: ADDRESS, CONF_APPLIANCE_ID: APPLIANCE_ID},
+    )
+    flow._identity = CompanionIdentity(COMPANION_ID, "33" * 64)
+    flow._pairing_result = PairingResult(11, APPLIANCE_ID, appliance_public_key="44" * 64)
+    flow.async_create_entry = Mock(return_value={"type": FlowResultType.CREATE_ENTRY})  # type: ignore[method-assign]
+    result = await flow.async_step_complete()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert flow._entry_data is not None
+    assert flow._entry_data[CONF_PAIRING_KEY_REF] == COMPANION_ID
+    record = await PairingKeyStore(hass, COMPANION_ID).async_load_saber(APPLIANCE_ID)
+    assert record.companion_public_key == bytes.fromhex("33" * 64)
+    assert record.appliance_public_key == bytes.fromhex("44" * 64)
+
+
+@pytest.mark.asyncio
+async def test_saber_entry_falls_back_to_the_cloud_when_its_keys_cannot_be_saved(
+    hass: Any,
+) -> None:
+    flow = _complete_flow(
+        hass,
+        source=config_entries.SOURCE_USER,
+        entry_data={CONF_ADDRESS: ADDRESS, CONF_APPLIANCE_ID: APPLIANCE_ID},
+    )
+    flow._identity = CompanionIdentity(COMPANION_ID, "33" * 64)
+    flow._pairing_result = PairingResult(11, APPLIANCE_ID, appliance_public_key="44" * 64)
+    flow.async_create_entry = Mock(return_value={"type": FlowResultType.CREATE_ENTRY})  # type: ignore[method-assign]
+    with patch(
+        "custom_components.weber_connect.config_flow.PairingKeyStore.async_save",
+        new=AsyncMock(side_effect=OSError("disk full")),
+    ):
+        result = await flow.async_step_complete()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert flow._entry_data is not None
+    assert CONF_PAIRING_KEY_REF not in flow._entry_data
+
+
 async def test_setup_uses_actual_crypto_gatt_driver_fake_cloud_and_private_store(hass: Any) -> None:
     """Compose the production setup layers around an offline synthetic GATT peer."""
 

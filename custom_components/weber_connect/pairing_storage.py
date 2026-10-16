@@ -1,4 +1,4 @@
-"""Private, atomic Home Assistant storage for confirmed SiLabs pairing keys."""
+"""Private, atomic Home Assistant storage for confirmed pairing keys."""
 
 from __future__ import annotations
 
@@ -32,6 +32,26 @@ class SiLabsCredentials:
         SiLabsCipher(self.keys, self.peer_public_key)
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class SaberSessionCredentials:
+    """Secret Saber session record; never place this object in diagnostics or config data.
+
+    The two 64-byte blobs a JOSL session is derived from (ADR 0004). The appliance
+    offers its half exactly once, in the pairing response.
+    """
+
+    companion_id: bytes
+    appliance_id: bytes
+    companion_public_key: bytes = field(repr=False)
+    appliance_public_key: bytes = field(repr=False)
+
+    def validate(self) -> None:
+        if len(self.companion_id) != 16 or len(self.appliance_id) != 16:
+            raise SiLabsSecurityError("Stored Saber identity is invalid.")
+        if len(self.companion_public_key) != 64 or len(self.appliance_public_key) != 64:
+            raise SiLabsSecurityError("Stored Saber session material is invalid.")
+
+
 class PairingKeyStore:
     """One private (0600) atomic storage file per companion, outside config entries.
 
@@ -47,10 +67,21 @@ class PairingKeyStore:
             hass, 1, f"weber_connect.pairing.{reference}", private=True, atomic_writes=True
         )
 
-    async def async_save(self, record: SiLabsCredentials) -> None:
+    async def async_save(self, record: SiLabsCredentials | SaberSessionCredentials) -> None:
         record.validate()
         if record.companion_id.hex() != self.reference:
             raise SiLabsSecurityError("Pairing storage identity does not match its reference.")
+        if isinstance(record, SaberSessionCredentials):
+            await self._store.async_save(
+                {
+                    "family": "saber",
+                    "companion_id": record.companion_id.hex(),
+                    "appliance_id": record.appliance_id.hex(),
+                    "companion_public_key": record.companion_public_key.hex(),
+                    "appliance_public_key": record.appliance_public_key.hex(),
+                }
+            )
+            return
         await self._store.async_save(
             {
                 "companion_id": record.companion_id.hex(),
@@ -81,6 +112,27 @@ class PairingKeyStore:
                 raise ValueError("Identity mismatch")
         except (KeyError, TypeError, ValueError) as exc:
             raise SiLabsSecurityError("Stored SiLabs pairing is missing or invalid.") from exc
+        return record
+
+    async def async_load_saber(self, appliance_id: str) -> SaberSessionCredentials:
+        data = await self._store.async_load()
+        try:
+            if data is None or data.get("family") != "saber":
+                raise ValueError("Missing record")
+            record = SaberSessionCredentials(
+                bytes.fromhex(data["companion_id"]),
+                bytes.fromhex(data["appliance_id"]),
+                bytes.fromhex(data["companion_public_key"]),
+                bytes.fromhex(data["appliance_public_key"]),
+            )
+            record.validate()
+            if (
+                record.companion_id.hex() != self.reference
+                or record.appliance_id.hex() != appliance_id
+            ):
+                raise ValueError("Identity mismatch")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SiLabsSecurityError("Stored Saber pairing is missing or invalid.") from exc
         return record
 
     async def async_remove(self) -> None:

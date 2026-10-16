@@ -44,7 +44,7 @@ from .const import (
 from .entity import known_probe_numbers
 from .models import CompanionIdentity, PairingResult
 from .options import WeberOptions
-from .pairing_storage import PairingKeyStore
+from .pairing_storage import PairingKeyStore, SaberSessionCredentials
 from .portable import async_read_portable
 from .protocol_adapters import ProtocolQualificationRequired, adapter_for
 from .silabs_pairing import SiLabsPairingResult
@@ -932,6 +932,7 @@ class WeberConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def _async_save_pairing_keys(self) -> bool:
         result = self._pairing_result
         if not isinstance(result, SiLabsPairingResult):
+            await self._async_save_saber_session()
             return True
         reference = result.credentials.companion_id.hex()
         try:
@@ -943,6 +944,32 @@ class WeberConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._entry_data[CONF_PAIRING_KEY_REF] = reference
             self._entry_data[CONF_CAPABILITIES] = result.capabilities
         return True
+
+    async def _async_save_saber_session(self) -> None:
+        """Keep a Saber appliance's local session keys, which it offers only while pairing.
+
+        They are optional: without them the entry reads through Weber Cloud, so a
+        failed save costs the local link rather than the setup.
+        """
+
+        result = self._pairing_result
+        if result is None or not result.appliance_public_key or self._identity is None:
+            return
+        reference = self._identity.companion_id
+        try:
+            await PairingKeyStore(self.hass, reference).async_save(
+                SaberSessionCredentials(
+                    bytes.fromhex(reference),
+                    bytes.fromhex(result.appliance_id),
+                    bytes.fromhex(self._identity.public_key),
+                    bytes.fromhex(result.appliance_public_key),
+                )
+            )
+        except Exception:
+            _LOGGER.warning("The Saber session keys could not be saved; using Weber Cloud.")
+            return
+        if self._entry_data is not None:
+            self._entry_data[CONF_PAIRING_KEY_REF] = reference
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> OptionsFlow:
