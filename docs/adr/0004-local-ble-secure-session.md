@@ -6,8 +6,11 @@ Implemented. The session construction (`josl_session.py`), the local read
 transport (`ble_session.py`), private storage of the session keys and the
 coordinator wiring are all in place and covered by tests. The read path was
 first exercised against a SmokeFire EX4 on 2026-09-27: the handshake was
-accepted and encrypted status fetches answered. That run kept the keys in the
-config entry; the private-store wiring has not yet been run on hardware.
+accepted and encrypted status fetches answered, and a probe target set from Home
+Assistant was accepted and read back. That run kept the keys in the config
+entry; the private-store wiring has not yet been run on hardware, and a cook
+mode, setpoint or shutdown command sent from Home Assistant has not yet been
+confirmed on a grill.
 
 ## Context
 
@@ -64,9 +67,10 @@ session, and only the command path does.
 
 ## Decision
 
-Read a Saber appliance over the local secure session when the entry holds the
-material for it. Commands travel inside the same session; they are left to a
-follow-up so the read path can be judged on its own.
+Read and command a Saber appliance over the local secure session when the
+entry holds the material for it. The controls that send commands exist only on
+an entry that has the session: the cloud socket drops a command, so a control
+there would be one that silently does nothing.
 
 `josl_session.py` carries the session construction. Its frames were compared
 byte for byte against `libjsecclient.so` over 36000 wraps spanning both body
@@ -75,7 +79,8 @@ differences; the vectors in `tests_native/test_josl_session.py` are that
 library's output rather than this implementation's.
 
 `ble_session.py` is the transport: connect, greet with `0x70` and a fresh
-32-byte nonce, derive the session from the answer, then fetch inside it.
+32-byte nonce, derive the session from the answer, then fetch and command
+inside it.
 Reading is not a lesser capability than commanding here - the app marks the
 status fetches `requiresEncryption` too - so a local link needs the session
 either way.
@@ -111,7 +116,8 @@ transient - nothing derives anything from it.
 - **A shared secret is now stored.** It lives in the private (0600) pairing
   store, never in the config entry, and diagnostics redact it by name.
 - The Saber local link is a third transport behind `_TransportSession`, beside
-  the cloud socket and the portable probe session.
+  the cloud socket and the portable probe session, and the only one with
+  `async_send_command`.
 
 **The tests prove the implementation, not the appliance.** Every test drives a
 fake GATT client, so what they show is that the code does what this document

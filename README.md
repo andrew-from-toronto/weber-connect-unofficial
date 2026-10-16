@@ -172,10 +172,13 @@ attributes on their corresponding entity to avoid duplicating every protocol
 field as a separate entity. Software and hardware versions are recorded on the
 Home Assistant device and in diagnostics.
 
-The integration is deliberately read-only. It exposes reported targets and
-timer progress, but does not expose recipe text or instructions and cannot
-start, stop, or change cooks, temperatures, timers, burners, or other appliance
-controls.
+Over Weber Cloud the integration is read-only: the cloud accepts a command and
+drops it. A hub read over [local Bluetooth](#local-bluetooth-saber-hubs) also
+gets controls that travel inside the encrypted session: cook mode, target grill
+temperature, a target and a clear button for each wired probe, and **Shut
+down**, which starts the grill's own cool-down and is refused unless the grill
+reports itself lit. Changing the target never lights an idle grill. Recipes,
+timers, burners and ignition stay in the Weber app.
 
 ## Requirements
 

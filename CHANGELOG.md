@@ -17,6 +17,10 @@
   pairing again. See ADR 0004.
 - Report a grill shutting down during its cool-down over Bluetooth, and carry
   each probe's unidentified `segment_temps` and `active_events` as attributes.
+- On a Saber hub read over local Bluetooth, add cook mode and target grill
+  temperature controls limited to what the appliance reports, wired probe
+  targets set and read back the way the Weber app does, and a **Shut down**
+  button. Commands travel only inside the local secure session.
 
 ## 3.2.2rc3 — 2026-10-16 (beta prerelease)
 

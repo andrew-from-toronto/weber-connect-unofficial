@@ -62,8 +62,10 @@ cache allowances have separate billing boundaries.
 - Never request the user's Weber email/password or extract phone secrets.
 - Cloud authentication alone is insufficient; associate and scope access to
   the paired appliance.
-- Remote commands, Wi-Fi configuration, ignition, recipe installation/start,
-  target changes, and grill-mode control are out of scope for 3.0.
+- Cook mode, target, probe target and shutdown commands travel only inside the
+  local secure session; never offer a control on a transport that cannot
+  deliver it. Wi-Fi configuration, ignition, and recipe installation/start are
+  out of scope.
 - Stable unique IDs must not depend on which adapter or proxy is selected.
 
 ## Compatibility reports
