@@ -113,7 +113,7 @@ transient - nothing derives anything from it.
 - The Saber local link is a third transport behind `_TransportSession`, beside
   the cloud socket and the portable probe session.
 
-**Nothing here has touched a real appliance.** Every test drives a fake GATT
-client, so what is proven is that the implementation does what this document
-says - not that the appliance agrees. The claim that matters is that a paired
-companion can open a session over BLE and have an encrypted fetch answered.
+**The tests prove the implementation, not the appliance.** Every test drives a
+fake GATT client, so what they show is that the code does what this document
+says. What the appliance agrees to rests on the 2026-09-27 run in the status
+above, which predates the private-store wiring.
