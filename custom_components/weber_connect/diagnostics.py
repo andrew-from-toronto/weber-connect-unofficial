@@ -82,6 +82,19 @@ async def async_get_config_entry_diagnostics(
         "fuel_level": state.get("fuel_level"),
         "software_version": state.get("software_version"),
         "hardware_version": state.get("hardware_version"),
+        # A compatibility report is mostly guesswork without the limits the
+        # appliance reported for itself. The SKU is a model, not an identifier.
+        "capabilities": {
+            "sku": state.get("sku"),
+            "capability_bits": state.get("capability_bits"),
+            "supported_cook_modes": state.get("supported_cook_modes"),
+            "target_min_c": state.get("target_min_temperature"),
+            "target_max_c": state.get("target_max_temperature"),
+            "target_step_c": state.get("target_step"),
+            "supports_ignition_request": state.get("supports_ignition_request"),
+            "supports_shutdown": state.get("supports_shutdown"),
+            "requires_target_on_device_first": state.get("requires_target_on_device_first"),
+        },
         "probe_slots": [
             {
                 "number": number,
@@ -148,7 +161,12 @@ async def async_get_config_entry_diagnostics(
 
 
 def _bluetooth_diagnostics(session: WeberBluetoothSession | None) -> dict[str, Any] | None:
-    """Describe the local link without any value it carries."""
+    """Describe the local link without any value it carries.
+
+    The capabilities frame holds the grill's serial number, so only its shape -
+    which tags arrived and how long each was - is reported. That is enough to
+    tell a frame that never arrives from one this decoder misreads.
+    """
 
     if session is None:
         return None
@@ -156,4 +174,6 @@ def _bluetooth_diagnostics(session: WeberBluetoothSession | None) -> dict[str, A
         "connections": session.socket_connections,
         "secure": session.is_secure,
         "received_types": list(session.received_types),
+        "capabilities_frames": session.capabilities_frames,
+        "capabilities_shape": [list(pair) for pair in session.capabilities_shape],
     }

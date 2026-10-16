@@ -50,8 +50,10 @@ from .saber_frames import (
     build_appliance_payload,
     build_handshake_body,
     build_transport_frame,
+    parse_appliance_capabilities_payload,
     parse_appliance_status_payload,
     parse_cook_session_status_payload,
+    parse_tlv,
     wrap_null_session,
 )
 
@@ -60,10 +62,12 @@ _LOGGER = logging.getLogger(__name__)
 OUTGOING_HANDSHAKE_GREETING = 0x70
 OUTGOING_FETCH_STATUS = 0x05
 OUTGOING_FETCH_APPLIANCE_STATUS = 0x07
+OUTGOING_FETCH_APPLIANCE_CAPABILITIES = 0x0E
 
 INCOMING_STATUS = 0x80
 INCOMING_APPLIANCE_STATUS = 0x83
 INCOMING_ERROR_MESSAGE = 0x87
+INCOMING_APPLIANCE_CAPABILITIES = 0x88
 INCOMING_HANDSHAKE_REQUIRED = 0xF0
 INCOMING_PAIRING_REQUIRED = 0xF1
 INCOMING_HANDSHAKE_SUCCESS = 0xF2
@@ -140,6 +144,11 @@ class WeberBluetoothSession:
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
         self._wake = asyncio.Event()
         self._appliance_status: dict[str, Any] = {}
+        # Capabilities describe the hardware rather than the cook, so they are
+        # asked for until one says something and then kept across reconnects.
+        self._capabilities: dict[str, Any] = {}
+        self.capabilities_frames = 0
+        self.capabilities_shape: tuple[tuple[int, int], ...] = ()
         self._closing = False
 
     @property
@@ -287,6 +296,9 @@ class WeberBluetoothSession:
         # status itself is in hand.
         awaiting = {INCOMING_APPLIANCE_STATUS}
         await self._async_write(client, OUTGOING_FETCH_APPLIANCE_STATUS)
+        if not self._capabilities:
+            awaiting.add(INCOMING_APPLIANCE_CAPABILITIES)
+            await self._async_write(client, OUTGOING_FETCH_APPLIANCE_CAPABILITIES)
         await self._async_write(client, OUTGOING_FETCH_STATUS)
         cook: dict[str, Any] | None = None
         loop = asyncio.get_running_loop()
@@ -321,6 +333,23 @@ class WeberBluetoothSession:
                     }
                 )
                 continue
+            if type_value == INCOMING_APPLIANCE_CAPABILITIES:
+                self.capabilities_frames += 1
+                self.capabilities_shape = tuple(
+                    (tag, len(value))
+                    for tag, values in sorted(parse_tlv(payload).items())
+                    for value in values
+                )
+                decoded = {
+                    key: value
+                    for key, value in parse_appliance_capabilities_payload(payload).items()
+                    if key != "kind"
+                }
+                # Cached only once it says something: a frame that decodes to
+                # nothing would otherwise stop the fetch being asked again.
+                if any(value not in (None, []) for value in decoded.values()):
+                    self._capabilities = decoded
+                continue
             if type_value == INCOMING_STATUS and cook is None:
                 cook = parse_cook_session_status_payload(payload)
                 deadline = min(deadline, loop.time() + REPLY_GRACE)
@@ -329,6 +358,7 @@ class WeberBluetoothSession:
         return {
             **cook,
             **{k: v for k, v in self._appliance_status.items() if k != "kind"},
+            **self._capabilities,
         }
 
     async def _async_connect(self) -> BleakClient:

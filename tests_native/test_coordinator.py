@@ -393,6 +393,8 @@ async def test_diagnostics_are_minimal_and_redact_legacy_and_current_secrets(
         socket_connections=3,
         is_secure=True,
         received_types=[0xF2, 0x83, 0x80],
+        capabilities_frames=1,
+        capabilities_shape=((1, 1), (4, 12)),
     )
     coordinator.ble_session = link  # type: ignore[assignment]
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)  # type: ignore[arg-type]
@@ -400,6 +402,8 @@ async def test_diagnostics_are_minimal_and_redact_legacy_and_current_secrets(
         "connections": 3,
         "secure": True,
         "received_types": [0xF2, 0x83, 0x80],
+        "capabilities_frames": 1,
+        "capabilities_shape": [[1, 1], [4, 12]],
     }
 
 

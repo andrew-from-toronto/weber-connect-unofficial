@@ -345,9 +345,9 @@ async def test_fetch_requests_are_written_inside_the_session() -> None:
     await session._async_handshake(client)
     client.writes.clear()
     await session._async_fetch(client)
-    # Appliance status and session status, both encrypted: the envelope carries a
-    # counter and a non-zero verification code.
-    assert len(client.writes) == 2
+    # Appliance status, capabilities and session status, all encrypted: the
+    # envelope carries a counter and a non-zero verification code.
+    assert len(client.writes) == 3
     assert all(frame[7] != 0 and frame[8] != 0 for frame in client.writes)
 
 
@@ -519,20 +519,55 @@ async def test_undecodable_frames_are_skipped_without_ending_the_wait() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fetch_skips_replies_it_did_not_ask_for() -> None:
+async def test_fetch_absorbs_a_capabilities_frame() -> None:
     client = FakeClient()
     session = _session(client)
     await client.start_notify(transport.RESPONSE_UUID, session._notify)
     client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
     await session._async_handshake(client)
     client.push(
-        _reply(0x88, bytes([1, 1, 2, 3, 1, 64])),
+        _reply(transport.INCOMING_APPLIANCE_CAPABILITIES, bytes([1, 1, 2, 3, 1, 64])),
         _reply(transport.INCOMING_STATUS, b""),
     )
     status = await session._async_fetch(client)
     assert status is not None
-    # The unrequested frame's probe count of 2 is not merged into the status.
-    assert status["probe_count"] == 0
+    assert session._capabilities["probe_count"] == 2
+    assert session.capabilities_frames == 1
+    assert session.capabilities_shape == ((1, 1), (3, 1))
+
+
+@pytest.mark.asyncio
+async def test_a_capabilities_frame_that_says_nothing_is_asked_for_again() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    client.push(
+        _reply(transport.INCOMING_APPLIANCE_CAPABILITIES, bytes([99, 2, 0, 0])),
+        _reply(transport.INCOMING_STATUS, b""),
+    )
+    assert await session._async_fetch(client) is not None
+    assert session._capabilities == {}
+    assert session.capabilities_frames == 1
+    assert session.capabilities_shape == ((99, 2),)
+
+
+@pytest.mark.asyncio
+async def test_capabilities_are_fetched_once_and_kept_across_a_reconnect() -> None:
+    client = NotifyingClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    session._capabilities = {"sku": "X"}
+    before = len(client.writes)
+    status = await session._async_fetch(client)
+    # Appliance status and session status only: capabilities are already held.
+    assert len(client.writes) - before == 2
+    assert status is not None and status["sku"] == "X"
+    await session._async_drop()
+    assert session._capabilities == {"sku": "X"}
 
 
 @pytest.mark.asyncio
