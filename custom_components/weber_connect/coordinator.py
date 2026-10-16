@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import datetime, timezone
@@ -36,8 +37,18 @@ from .pairing_storage import SaberSessionCredentials
 from .portable import PortableSession
 from .saber_frames import (
     DEFAULT_MESSAGE_VERSION,
+    OUTGOING_PLAN_PAYLOAD,
+    OUTGOING_SESSION_COMMAND,
     OUTGOING_SET_COOK_MODE,
+    PRIMITIVE_PROGRAM_ID,
+    SESSION_COMMAND_REMOVE,
+    SESSION_COMMAND_START,
+    SESSION_TYPE_PROBED,
+    build_plan_payload_bodies,
+    build_probe_target_plan,
+    build_session_command_body,
     build_set_cook_mode_body,
+    probe_target_from_program,
 )
 from .state import normalize_state
 from .support import SupportEvent, SupportJournal
@@ -46,6 +57,18 @@ from .weber_cloud_socket import WeberCloudSession
 
 _LOGGER = logging.getLogger(__name__)
 OFFLINE_FAILURE_THRESHOLD = 3
+# A probe with a program on it, as opposed to one merely plugged in (PROBED) or
+# idle: only then is there a session for REMOVE to end before a new upload.
+PROBE_SESSION_STATES = frozenset(
+    {"PRIMED", "READY", "ACTIVE", "PAUSED", "COMPLETE", "ERROR", "ACTIVE_FIXED", "PREHEAT"}
+)
+# The app waits for REMOVE to be acknowledged before uploading; that callback
+# did not decompile, so give the appliance a moment to retire the old session.
+REMOVE_SETTLE_SECONDS = 1.5
+# How long to wait for a program readback before asking again, and how long a
+# target just sent is trusted while the appliance is still starting its session.
+PROGRAM_REQUEST_RETRY_SECONDS = 60.0
+TARGET_SETTLE_SECONDS = 30.0
 
 
 class _TransportSession(Protocol):
@@ -80,6 +103,18 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.consecutive_failures = 0
         self.successful_updates = 0
         self.failed_updates = 0
+        # The appliance never reports a probe target as a number - only pointers
+        # into the program that holds it - so the target is read back from that
+        # program, and until then is the one this entry last sent.
+        self.probe_targets: dict[int, float | None] = {}
+        self._probe_sessions: dict[int, dict[str, Any]] = {}
+        self._next_plan_id = 1
+        self._program_asked: dict[int, tuple[tuple[Any, ...], float]] = {}
+        self._target_sent_at: dict[int, float] = {}
+        # The plan id just uploaded to each slot, until the appliance's status shows it running. Until
+        # then the status still describes the program being replaced, and reading that back would put
+        # the old target over the one just set (measured 2026-09-27: 155 set, 150 restored).
+        self._plan_sent: dict[int, int] = {}
 
         # An appliance speaks the format it agreed during pairing, and older
         # ones never learn the newer bodies. Keep that negotiated version
@@ -212,6 +247,11 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.successful_updates == 1 or self.consecutive_failures:
             self.support_journal.record(SupportEvent.CONNECTED)
         self.last_error = None
+        for row in status.get("probes") or ():
+            number = row.get("probe_number") if isinstance(row, dict) else None
+            if isinstance(number, int):
+                self._probe_sessions[number] = row
+        self._reconcile_probe_targets(status.get("program_details") or {})
         self.last_successful_update = datetime.now(timezone.utc).isoformat()
         self.consecutive_failures = 0
         ir.async_delete_issue(
@@ -305,6 +345,120 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 target_deci_celsius,
             ),
         )
+
+    def _reconcile_probe_targets(self, details_by_slot: dict[int, dict[str, Any]]) -> None:
+        """Recover each probe's target from the program the appliance says it runs.
+
+        This is what makes a target survive a restart, and follow one set or
+        cleared from the Weber app: the app reads it back the same way.
+        """
+
+        now = time.monotonic()
+        for number, row in self._probe_sessions.items():
+            if row.get("state") not in PROBE_SESSION_STATES:
+                sent = self._target_sent_at.get(number)
+                if sent is None or now - sent > TARGET_SETTLE_SECONDS:
+                    self.probe_targets[number] = None
+                continue
+            pending = self._plan_sent.get(number)
+            if pending is not None:
+                if row.get("plan_id") != pending:
+                    continue
+                del self._plan_sent[number]
+            program_hex = str(row.get("program_id_hex") or "").replace(":", "").lower()
+            details = details_by_slot.get(number - 1)
+            if (
+                details is not None
+                and details.get("plan_id") == row.get("plan_id")
+                and details.get("program_id_hex") == (program_hex or "00" * 16)
+            ):
+                target = probe_target_from_program(details, row.get("step_id"))
+                if target is not None:
+                    self.probe_targets[number] = target / 10
+                continue
+            key = (program_hex, row.get("plan_id"), row.get("session_id"))
+            asked = self._program_asked.get(number)
+            if self.ble_session is not None and (
+                asked is None or asked[0] != key or now - asked[1] > PROGRAM_REQUEST_RETRY_SECONDS
+            ):
+                self._program_asked[number] = (key, now)
+                self.ble_session.request_program_details(SESSION_TYPE_PROBED, number - 1)
+
+    def _plan_id_for(self, number: int) -> int:
+        """Never reuse the plan id a slot is already running - the app increments too."""
+
+        current = self._probe_sessions.get(number, {}).get("plan_id")
+        plan_id = self._next_plan_id & 0xFF
+        if plan_id == current:
+            plan_id = (plan_id + 1) & 0xFF
+        self._next_plan_id = plan_id + 1
+        return plan_id
+
+    async def _async_remove_probe_session(self, number: int) -> bool:
+        """End whatever program the appliance is running on one probe slot."""
+
+        row = self._probe_sessions.get(number, {})
+        if row.get("state") not in PROBE_SESSION_STATES:
+            return False
+        # The status renders ids as colon-separated hex.
+        program_hex = str(row.get("program_id_hex") or "").replace(":", "")
+        program_id = bytes.fromhex(program_hex) if len(program_hex) == 32 else PRIMITIVE_PROGRAM_ID
+        await self._async_command(
+            OUTGOING_SESSION_COMMAND,
+            build_session_command_body(
+                self.message_version,
+                program_id,
+                int(row.get("plan_id") or 0),
+                SESSION_COMMAND_REMOVE,
+                SESSION_TYPE_PROBED,
+                number - 1,
+            ),
+        )
+        return True
+
+    async def async_set_probe_target(self, number: int, target_deci_celsius: int) -> None:
+        """Hold one wired probe until it reaches a temperature, the way the app does.
+
+        The upload is the app's own one-step primitive: no cavity temperature
+        and cook mode NONE, so it cannot move the grill's setpoint or light it.
+        """
+
+        if await self._async_remove_probe_session(number):
+            await asyncio.sleep(REMOVE_SETTLE_SECONDS)
+        plan_id = self._plan_id_for(number)
+        for body in build_plan_payload_bodies(
+            self.message_version,
+            PRIMITIVE_PROGRAM_ID,
+            plan_id,
+            SESSION_TYPE_PROBED,
+            number - 1,
+            build_probe_target_plan(self.message_version, target_deci_celsius),
+        ):
+            await self._async_command(OUTGOING_PLAN_PAYLOAD, body)
+        await self._async_command(
+            OUTGOING_SESSION_COMMAND,
+            build_session_command_body(
+                self.message_version,
+                PRIMITIVE_PROGRAM_ID,
+                plan_id,
+                SESSION_COMMAND_START,
+                SESSION_TYPE_PROBED,
+                number - 1,
+            ),
+        )
+        self.probe_targets[number] = target_deci_celsius / 10
+        self._target_sent_at[number] = time.monotonic()
+        self._plan_sent[number] = plan_id
+        self.async_update_listeners()
+
+    async def async_clear_probe_target(self, number: int) -> None:
+        """End a probe's target program, if it has one."""
+
+        await self._async_remove_probe_session(number)
+        self._target_sent_at.pop(number, None)
+        self._plan_sent.pop(number, None)
+        self.probe_targets[number] = None
+        self.async_update_listeners()
 
     async def _async_command(self, type_value: int, payload: bytes = b"") -> None:
         """Send one command inside the local session.

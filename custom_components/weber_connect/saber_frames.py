@@ -28,6 +28,28 @@ COOK_MODE_COMMAND_VERSION = 7
 TLV_COMMAND_VERSION = 11
 NO_TEMPERATURE_DC = -32768
 OUTGOING_SET_COOK_MODE = 0x0C
+OUTGOING_SESSION_COMMAND = 0x01
+OUTGOING_PLAN_PAYLOAD = 0x04
+OUTGOING_FETCH_PROGRAM_DETAILS = 0x0B
+INCOMING_PROGRAM_DETAILS = 0x86
+
+# A probe target is a one-step "primitive" program the app uploads itself
+# (SaberMessageFactory.e): no cavity temperature, cook mode NONE, one probe
+# trigger. Those two empty fields are what keep it from touching the grill's
+# own setpoint or mode - the recipe path fills them, and must never be copied.
+PRIMITIVE_PROGRAM_ID = bytes(16)
+PRIMITIVE_PROGRAM_NAME = "Primitive"
+PRIMITIVE_STEP_ID = 2
+SESSION_TYPE_PROBED = 1
+SESSION_COMMAND_START = 2
+SESSION_COMMAND_REMOVE = 4
+TRIGGER_PROBE_TEMP_CEILING = 3
+TRIGGER_REQUIREMENT_ANY = 2
+ETA_CURVE_NONE = 0
+STEP_COOK_MODE_NONE = 0
+# A step carries its own cook-mode byte from ROCKET (10) onward.
+COOK_MODE_STEP_VERSION = 10
+PLAN_CHUNK_LIMIT = 255
 
 OUTGOING_TYPES = {
     0x01: "OUTGOING_SESSION_COMMAND",
@@ -229,6 +251,179 @@ def build_set_cook_mode_body(
     if target_deci_celsius is not None:
         body += bytes([2, 2]) + encoded_target
     return body
+
+
+def _plan_id_bytes(message_version: int, plan_id: int) -> bytes:
+    if message_version >= TLV_COMMAND_VERSION:
+        return (plan_id & 0xFFFFFFFF).to_bytes(4, "little")
+    return bytes([plan_id & 0xFF])
+
+
+def build_probe_target_plan(message_version: int, target_deci_celsius: int) -> bytes:
+    """Serialize the one-step program that holds a probe until it reaches a target.
+
+    Packed fields, not TLV (CookProgramPayloadKt): name, ETA curve, steps,
+    prompts. The trigger carries deci-Celsius even though the app's model is
+    milli-Celsius - it divides by 100 on the way out.
+    """
+
+    if not -32768 <= target_deci_celsius <= 32767:
+        raise ValueError("probe target must fit a signed 16-bit deci-Celsius value")
+    wide = message_version >= TLV_COMMAND_VERSION
+    name = PRIMITIVE_PROGRAM_NAME.encode("utf-8")
+    count = (lambda n: n.to_bytes(2, "little")) if wide else (lambda n: bytes([n]))
+    step = (
+        count(PRIMITIVE_STEP_ID)
+        + (0).to_bytes(4, "little", signed=True)  # base duration, ms
+        + NO_TEMPERATURE_DC.to_bytes(2, "little", signed=True)  # no cavity target
+        + bytes([1])  # one trigger
+        + target_deci_celsius.to_bytes(4, "little", signed=True)
+        + bytes([TRIGGER_PROBE_TEMP_CEILING, TRIGGER_REQUIREMENT_ANY, STEP_COOK_MODE_NONE])
+    )
+    return bytes([len(name)]) + name + bytes([ETA_CURVE_NONE]) + count(1) + step + count(0)
+
+
+def build_plan_payload_bodies(
+    message_version: int,
+    program_id: bytes,
+    plan_id: int,
+    session_type: int,
+    session_index: int,
+    plan: bytes,
+) -> list[bytes]:
+    """Split a serialized plan into the chunked 0x04 bodies the appliance takes."""
+
+    if len(program_id) != 16:
+        raise ValueError("program id must be 16 bytes")
+    if len(plan) > PLAN_CHUNK_LIMIT:
+        # The app packs whole fields into 255-byte chunks; a one-step primitive
+        # is 28 bytes, so a longer plan means something built the wrong thing.
+        raise ValueError("plan does not fit one chunk")
+    header = program_id + _plan_id_bytes(message_version, plan_id)
+    return [header + bytes([0, session_type & 0xFF, session_index & 0xFF]) + plan]
+
+
+def build_session_command_body(
+    message_version: int,
+    program_id: bytes,
+    plan_id: int,
+    command: int,
+    session_type: int,
+    session_index: int,
+) -> bytes:
+    """Build a 0x01 session command: start, or remove, one probe's program."""
+
+    if len(program_id) != 16:
+        raise ValueError("program id must be 16 bytes")
+    if message_version >= TLV_COMMAND_VERSION:
+        return (
+            bytes([1, 1, command & 0xFF, 2, 1, session_type & 0xFF, 3, 1, session_index & 0xFF])
+            + bytes([4, 16])
+            + program_id
+            + bytes([5, 4])
+            + (plan_id & 0xFFFFFFFF).to_bytes(4, "little")
+        )
+    return (
+        program_id
+        + _plan_id_bytes(message_version, plan_id)
+        + bytes([command & 0xFF, session_type & 0xFF, session_index & 0xFF])
+    )
+
+
+def build_fetch_program_details_body(session_type: int, session_index: int) -> bytes:
+    """Ask the appliance for the program running on one session slot."""
+
+    return bytes([session_type & 0xFF, session_index & 0xFF])
+
+
+class _Reader:
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.index = 0
+
+    def take(self, count: int) -> bytes:
+        end = self.index + count
+        if end > len(self.data):
+            raise ValueError("program details ended early")
+        chunk = self.data[self.index : end]
+        self.index = end
+        return chunk
+
+    def u8(self) -> int:
+        return self.take(1)[0]
+
+    def uint(self, width: int) -> int:
+        return int.from_bytes(self.take(width), "little")
+
+    def sint(self, width: int) -> int:
+        return int.from_bytes(self.take(width), "little", signed=True)
+
+
+def parse_program_details_payload(message_version: int, payload: bytes) -> dict[str, Any] | None:
+    """Decode a 0x86 reply: the program a slot is running, in the upload's own format.
+
+    The appliance hands back the packed CookProgramPayload it was given, which is
+    how the app recovers a probe target it did not set itself. Walked by its own
+    counts rather than fixed offsets, since a program from the app may carry a
+    different name, several steps, and prompts. None for anything malformed.
+    """
+
+    wide = message_version >= TLV_COMMAND_VERSION
+    reader = _Reader(payload)
+    try:
+        session_type = reader.u8()
+        session_index = reader.u8()
+        program_id = reader.take(16)
+        plan_id = reader.uint(4) if wide else reader.u8()
+        reader.take(reader.u8())  # name
+        reader.u8()  # ETA curve
+        steps = []
+        for _ in range(reader.uint(2) if wide else reader.u8()):
+            step_id = reader.uint(2) if wide else reader.u8()
+            reader.take(4)  # base duration
+            cooking_temp_dc = reader.sint(2)
+            triggers = []
+            for _ in range(reader.u8()):
+                value = reader.sint(4)
+                triggers.append({"type": reader.u8(), "value": value})
+            reader.u8()  # requirement
+            if message_version >= COOK_MODE_STEP_VERSION:
+                reader.u8()  # step cook mode
+            steps.append(
+                {
+                    "id": step_id,
+                    "cooking_temp_dc": None
+                    if cooking_temp_dc == NO_TEMPERATURE_DC
+                    else cooking_temp_dc,
+                    "triggers": triggers,
+                }
+            )
+    except ValueError:
+        return None
+    return {
+        "session_type": session_type,
+        "session_index": session_index,
+        "program_id_hex": program_id.hex(),
+        "plan_id": plan_id,
+        "steps": steps,
+    }
+
+
+def probe_target_from_program(details: dict[str, Any], step_id: int | None) -> int | None:
+    """The deci-Celsius target the app would display for a probe's program.
+
+    GetCookTargetsInfoUseCase reads the active step, falling back to the last
+    one, and takes its first probe-ceiling trigger.
+    """
+
+    steps = details.get("steps") or []
+    if not steps:
+        return None
+    step = next((row for row in steps if row["id"] == step_id), steps[-1])
+    for trigger in step["triggers"]:
+        if trigger["type"] == TRIGGER_PROBE_TEMP_CEILING:
+            return int(trigger["value"])
+    return None
 
 
 def wrap_null_session(appliance_payload: bytes, message_type: int = 0) -> bytes:

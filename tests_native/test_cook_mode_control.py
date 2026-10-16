@@ -198,23 +198,24 @@ async def test_controls_appear_only_once_the_appliance_reports_them(hass: object
     coordinator.async_add_listener = lambda listener: listeners.append(listener) or MagicMock()
     entry = _entity_entry(coordinator)
 
-    add_number = MagicMock()
+    numbers: list[object] = []
     add_select = MagicMock()
-    await async_setup_number(hass, entry, add_number)  # type: ignore[arg-type]
+    with patch("custom_components.weber_connect.number.known_probe_numbers", return_value=set()):
+        await async_setup_number(hass, entry, numbers.extend)  # type: ignore[arg-type]
     await async_setup_select(hass, entry, add_select)  # type: ignore[arg-type]
-    add_number.assert_not_called()
+    assert numbers == []
     add_select.assert_not_called()
 
     coordinator.data = {"target_grill_temperature": 82.2, "cook_mode": "smoke_boost"}
     for listener in listeners:
         listener()
-    assert add_number.call_count == 1
+    assert [type(entity) for entity in numbers] == [WeberTargetTemperatureNumber]
     assert add_select.call_count == 1
 
     # A second report must not add a duplicate of either control.
     for listener in listeners:
         listener()
-    assert add_number.call_count == 1
+    assert len(numbers) == 1
     assert add_select.call_count == 1
 
 
