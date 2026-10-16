@@ -17,7 +17,9 @@ Version 3.x is one native Home Assistant integration:
   context;
 - phone + Home Assistant by default: the Weber app may own Bluetooth while
   Home Assistant follows probe temperatures through its own Weber Cloud
-  connection.
+  connection;
+- optional local reads for Saber hubs over an encrypted Bluetooth session, see
+  [Local Bluetooth](#local-bluetooth-saber-hubs).
 
 This project is not affiliated with, endorsed by, or supported by Weber.
 
@@ -26,8 +28,9 @@ This project is not affiliated with, endorsed by, or supported by Weber.
 > companion, paired through an ESPHome
 > proxy, appeared in Weber Cloud in about 12 seconds, and immediately delivered
 > native probe entities while the Weber app was open. The 70-minute app/cloud
-> session also passed. Local Bluetooth is used for physically confirmed setup
-> only; unauthenticated null-session telemetry is rejected.
+> session also passed. Unauthenticated null-session telemetry is rejected; a
+> local Bluetooth read publishes only replies to Home Assistant's own encrypted
+> requests.
 
 ## Install
 
@@ -101,12 +104,29 @@ observed protocol does not provide a peer-authentication mechanism, that mode is
 retired fail closed. Existing entries that selected it migrate to the
 authenticated cloud companion when reloaded.
 
+### Local Bluetooth (Saber hubs)
+
+A Saber hub (Connect Hub or SmokeFire) paired with this version also keeps the
+session keys the hub offers during pairing, in Home Assistant's private storage
+rather than the config entry. Home Assistant then reads the hub over an
+encrypted Bluetooth session instead of Weber Cloud, and publishes only replies
+to its own encrypted requests
+([ADR 0004](docs/adr/0004-local-ble-secure-session.md)).
+
+The hub accepts one Bluetooth connection, so a hub read locally is one the
+Weber app cannot reach over Bluetooth; the app can still reach it over Wi-Fi.
+To give Bluetooth back to the phone without pairing again, turn off **Connect
+over Bluetooth** in the integration's options, and Home Assistant reads through
+Weber Cloud instead. Entries paired before this version and SiLabs appliances
+keep using Weber Cloud; pairing a Saber hub again opts it in.
+
 Probe entities retain stable slot IDs such as `probe_2_temperature`. Optional
 nicknames keep the physical number visible—for example, **Brisket · Probe 2**—
 without changing the entity's identity. Settings show Probe 1 and Probe 2,
 plus any additional probe slots already registered for that hub. Previously
 saved names are retained even when their fields are hidden. Weber Cloud is
-used automatically; there is no connection-mode selector.
+used automatically unless the hub was paired for local Bluetooth; there is no
+connection-mode selector.
 
 The device page starts with **Probe 1** and **Probe 2**, which are common to the
 supported controllers. **Probe 3** and **Probe 4** are added only after the
@@ -137,8 +157,8 @@ measurement time for each field. The dedicated **Last successful update** entity
 tracks live updates without adding timestamp-only history records to every sensor.
 
 Two additional context entities are enabled by default. **Connection** reports
-**Connected** or **Disconnected** and identifies **Weber Cloud** as the live
-transport. **Last successful update** preserves the
+**Connected** or **Disconnected** and identifies the live transport, **Weber
+Cloud** or **Bluetooth**. **Last successful update** preserves the
 time fresh hub data most recently arrived, including while the hub is sleeping
 or powered off.
 
@@ -164,7 +184,8 @@ controls.
 - A connectable Home Assistant Bluetooth adapter or active ESPHome Bluetooth
   proxy in range during setup.
 - Home Assistant internet access and a hub that is already online in Weber
-  Cloud for grill setup and live grill telemetry. Portable probes use local Bluetooth.
+  Cloud for grill setup, and for live grill telemetry unless the hub is read
+  over local Bluetooth. Portable probes use local Bluetooth.
 
 For an ESPHome proxy, `bluetooth_proxy.active` must be enabled and a connection
 slot must be available. No proxy address or encryption key is entered into this

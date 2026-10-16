@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted and implemented.
+Accepted and implemented. Amended by
+[ADR 0004](0004-local-ble-secure-session.md), which adds peer-authenticated
+local reads for Saber hubs; the rejection of unsolicited and null-session local
+status below still holds.
 
 ## Context
 

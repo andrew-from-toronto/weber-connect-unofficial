@@ -10,6 +10,13 @@
   portable probe session. Hardware interoperability remains pending; tests use
   synthetic peers, storage and Bluetooth routes.
 - Preserve RC3 evidence and bind this changed runtime to pending hardware gates.
+- Read Saber hubs over the local JOSL Bluetooth secure session when they were
+  paired with its session keys, which are kept in the private pairing store.
+  Only replies to Home Assistant's own encrypted requests are published, and a
+  **Connect over Bluetooth** option returns an entry to Weber Cloud without
+  pairing again. See ADR 0004.
+- Report a grill shutting down during its cool-down over Bluetooth, and carry
+  each probe's unidentified `segment_temps` and `active_events` as attributes.
 
 ## 3.2.2rc3 — 2026-10-16 (beta prerelease)
 

@@ -53,9 +53,11 @@ cache allowances have separate billing boundaries.
   an ESPHome proxy, copy a proxy key, or read Home Assistant `.storage`.
 - Re-resolve the best adapter or proxy on connection retry and disconnect every
   GATT client in `finally`.
-- Keep live telemetry on the authenticated cloud companion. Bluetooth is for
-  physically confirmed setup only until peer-authenticated local status is
-  documented and validated.
+- Keep live telemetry on an authenticated path: the cloud companion, or for a
+  Saber hub the local secure session of
+  [ADR 0004](docs/adr/0004-local-ble-secure-session.md), which publishes only
+  replies to its own encrypted requests. Never publish unsolicited or
+  null-session local status.
 - Preserve physical confirmation for pairing.
 - Never request the user's Weber email/password or extract phone secrets.
 - Cloud authentication alone is insufficient; associate and scope access to
