@@ -270,8 +270,17 @@ class WeberBluetoothSession:
         await self._async_write(client, OUTGOING_FETCH_APPLIANCE_STATUS)
         await self._async_write(client, OUTGOING_FETCH_STATUS)
         cook: dict[str, Any] | None = None
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + STATUS_TIMEOUT
         while cook is None or awaiting:
-            answer = await self._async_next_payload(STATUS_TIMEOUT if cook is None else REPLY_GRACE)
+            # A deadline, not a per-frame timeout: with a probe program running the
+            # appliance streams status frames back to back, and a wait that restarted
+            # on each of them never ended - measured 2026-09-27 as a link that stayed
+            # up, failed nothing, and published nothing for minutes.
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            answer = await self._async_next_payload(remaining)
             if answer is None:
                 break
             type_value, payload = answer
@@ -291,6 +300,7 @@ class WeberBluetoothSession:
                 continue
             if type_value == INCOMING_STATUS and cook is None:
                 cook = parse_cook_session_status_payload(payload)
+                deadline = min(deadline, loop.time() + REPLY_GRACE)
         if cook is None:
             return None
         return {

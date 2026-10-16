@@ -634,3 +634,17 @@ def test_coordinator_selects_bluetooth_only_with_stored_session_material() -> No
         )
         assert fallback.source == "cloud"
         assert fallback.ble_session is None
+
+
+@pytest.mark.asyncio
+async def test_the_fetch_deadline_holds_against_a_stream_of_status() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    # The appliance status never comes; status frames keep arriving instead.
+    client.push(*[_reply(transport.INCOMING_STATUS, bytes([1, 2, 0x68, 0x06]))] * 5)
+    with patch.object(transport, "REPLY_GRACE", 0.0):
+        status = await session._async_fetch(client)
+    assert status is not None
