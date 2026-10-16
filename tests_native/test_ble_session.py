@@ -1,4 +1,4 @@
-"""Local Bluetooth transport: handshake and encrypted fetch."""
+"""Local Bluetooth transport: handshake, encrypted fetch, and command writes."""
 
 from __future__ import annotations
 
@@ -307,6 +307,33 @@ async def test_fetch_times_out_into_none() -> None:
     await session._async_handshake(client)
     with patch.object(transport, "STATUS_TIMEOUT", 0.01):
         assert await session._async_fetch(client) is None
+
+
+@pytest.mark.asyncio
+async def test_command_requires_an_established_session() -> None:
+    session = _session()
+    with pytest.raises(WeberBluetoothError, match="not connected"):
+        await session.async_send_command(0x0C, b"\x01")
+    client = FakeClient()
+    session._client = client
+    with pytest.raises(WeberBluetoothError, match="not connected"):
+        await session.async_send_command(0x0C, b"\x01")
+
+
+@pytest.mark.asyncio
+async def test_command_is_written_inside_the_session() -> None:
+    client = FakeClient()
+    session = _session(client)
+    await client.start_notify(transport.RESPONSE_UUID, session._notify)
+    client.push(_reply(transport.INCOMING_HANDSHAKE_SUCCESS))
+    await session._async_handshake(client)
+    client.writes.clear()
+    await session.async_send_command(0x0C, bytes([1, 1, 1, 2, 2, 0x40, 0x06]))
+    assert len(client.writes) == 1
+    frame = client.writes[0]
+    # Encrypted: the envelope carries a counter and a non-zero verification code.
+    assert frame[7] != 0 and frame[8] != 0
+    assert session._wake.is_set()
 
 
 @pytest.mark.asyncio

@@ -143,6 +143,8 @@ COOK_MODE_OPTIONS = [
     "sear",
     "steam",
     "warm",
+    "pizza",
+    "clean",
 ]
 WIFI_STATUS_OPTIONS = [
     "unknown",

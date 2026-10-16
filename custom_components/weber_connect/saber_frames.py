@@ -20,6 +20,15 @@ RESPONSE_UUID = "31084a75-6e65-81de-a4b2-940b4c6f6b69"
 
 DEFAULT_MESSAGE_VERSION = 11
 
+# Weber changed the set-cook-mode body twice. NUCLEON added the cook mode byte
+# ahead of the target, and V11 replaced the whole body with tagged fields. An
+# appliance reports the format it speaks during pairing, so both older shapes
+# stay reachable: a SmokeFire pairs as ROCKET and never sees the tagged form.
+COOK_MODE_COMMAND_VERSION = 7
+TLV_COMMAND_VERSION = 11
+NO_TEMPERATURE_DC = -32768
+OUTGOING_SET_COOK_MODE = 0x0C
+
 OUTGOING_TYPES = {
     0x01: "OUTGOING_SESSION_COMMAND",
     0x02: "OUTGOING_TIMER_COMMAND",
@@ -195,6 +204,33 @@ def build_pairing_body(
     return companion_id + companion_public_key + build_josl_string(display_name)
 
 
+def build_set_cook_mode_body(
+    message_version: int,
+    cook_mode_value: int,
+    target_deci_celsius: int | None = None,
+) -> bytes:
+    """Build the body that changes an appliance's cook mode and target.
+
+    The cook mode is not optional in any encoding, so a caller changing only the
+    target must resend the mode the appliance already reports. An absent target
+    is the app's own sentinel rather than a zero, which would read as 0 degrees.
+    """
+
+    target = NO_TEMPERATURE_DC if target_deci_celsius is None else int(target_deci_celsius)
+    if not -32768 <= target <= 32767:
+        raise ValueError("target temperature must fit a signed 16-bit deci-Celsius value")
+    encoded_target = target.to_bytes(2, "little", signed=True)
+    mode = bytes([cook_mode_value & 0xFF])
+    if message_version < TLV_COMMAND_VERSION:
+        if message_version < COOK_MODE_COMMAND_VERSION:
+            return encoded_target
+        return mode + encoded_target
+    body = bytes([1, 1]) + mode
+    if target_deci_celsius is not None:
+        body += bytes([2, 2]) + encoded_target
+    return body
+
+
 def wrap_null_session(appliance_payload: bytes, message_type: int = 0) -> bytes:
     """Wrap a plaintext appliance payload with the app's null-session envelope."""
 
@@ -288,7 +324,11 @@ COOK_MODES = {
     8: "sear",
     9: "steam",
     10: "warm",
+    11: "pizza",
+    12: "clean",
 }
+
+COOK_MODE_VALUES = {name: value for value, name in COOK_MODES.items()}
 
 CLOUD_CONNECTION_STATES = {
     0: "unknown",

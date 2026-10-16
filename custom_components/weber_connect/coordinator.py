@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -33,7 +34,11 @@ from .const import (
 from .options import WeberOptions
 from .pairing_storage import SaberSessionCredentials
 from .portable import PortableSession
-from .saber_frames import DEFAULT_MESSAGE_VERSION
+from .saber_frames import (
+    DEFAULT_MESSAGE_VERSION,
+    OUTGOING_SET_COOK_MODE,
+    build_set_cook_mode_body,
+)
 from .state import normalize_state
 from .support import SupportEvent, SupportJournal
 from .weber_cloud import CloudConfig, WeberCloudClient
@@ -284,6 +289,36 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     translation_placeholders={"name": self.entry.title},
                 )
                 return
+
+    async def async_set_cook_mode(
+        self,
+        cook_mode_value: int,
+        target_deci_celsius: int | None = None,
+    ) -> None:
+        """Change the appliance's cook mode and, optionally, its target."""
+
+        await self._async_command(
+            OUTGOING_SET_COOK_MODE,
+            build_set_cook_mode_body(
+                self.message_version,
+                cook_mode_value,
+                target_deci_celsius,
+            ),
+        )
+
+    async def _async_command(self, type_value: int, payload: bytes = b"") -> None:
+        """Send one command inside the local session.
+
+        The cloud socket accepts a command and drops it (ADR 0004), so only a
+        Bluetooth entry has the controls that reach here.
+        """
+
+        if self.ble_session is None:
+            raise HomeAssistantError("Changing the grill needs its local Bluetooth connection.")
+        try:
+            await self.ble_session.async_send_command(type_value, payload)
+        except WeberBluetoothError as err:
+            raise HomeAssistantError(str(err)) from err
 
     async def async_close(self) -> None:
         """Cancel all entry work and release the selected transport."""

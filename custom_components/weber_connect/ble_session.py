@@ -1,4 +1,4 @@
-"""A local Bluetooth transport that reads a paired Saber appliance.
+"""A local Bluetooth transport that can both read a Saber appliance and drive it.
 
 This is the half of ADR 0004 that talks to the hardware. The session crypto it
 depends on lives in `josl_session.py` and is verified against Weber's own
@@ -253,6 +253,18 @@ class WeberBluetoothSession:
             self.keys.appliance_public_key,
             nonce,
         )
+
+    async def async_send_command(self, type_value: int, payload: bytes = b"") -> None:
+        """Send one appliance command inside the established session."""
+
+        client = self._client
+        if client is None or self._session is None:
+            raise WeberBluetoothError(
+                "Home Assistant is not connected to the appliance over Bluetooth. "
+                "Wait for the next update and try again."
+            )
+        await self._async_write(client, type_value, payload)
+        self.async_wake()
 
     async def _async_fetch(self, client: BleakClient) -> dict[str, Any] | None:
         """Ask for one status and assemble it from the replies."""
