@@ -11,6 +11,7 @@ from .const import (
     CONF_CONNECTION_MODE,
     CONF_PROBE_NAME_PREFIX,
     CONF_PROBES,
+    CONF_USE_BLUETOOTH,
 )
 
 
@@ -25,6 +26,12 @@ class WeberOptions:
     """Validated effective options with product defaults."""
 
     connection_mode: ConnectionMode = ConnectionMode.PHONE_AND_HOME_ASSISTANT
+    # Only meaningful for an entry that stored session material when it was
+    # paired. It lets the owner fall back to cloud reads without discarding
+    # those secrets - the local link is unproven hardware territory, and the
+    # alternative way back is deleting the entry, which is what breaks
+    # dashboards. It can never turn Bluetooth on for an entry without secrets.
+    use_bluetooth: bool = True
     probe_names: tuple[str, str, str, str] = ("", "", "", "")
 
     @property
@@ -66,6 +73,7 @@ class WeberOptions:
         )
         return cls(
             connection_mode=mode,
+            use_bluetooth=bool(connection.get(CONF_USE_BLUETOOTH, True)),
             probe_names=names,
         )
 
@@ -75,6 +83,7 @@ class WeberOptions:
         return {
             CONF_CONNECTION: {
                 CONF_CONNECTION_MODE: self.connection_mode.value,
+                CONF_USE_BLUETOOTH: self.use_bluetooth,
             },
             CONF_PROBES: {
                 f"{CONF_PROBE_NAME_PREFIX}{number}": self.probe_name(number)

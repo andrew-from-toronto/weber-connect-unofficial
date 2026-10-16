@@ -514,6 +514,8 @@ async def test_saber_entry_keeps_its_session_keys_in_private_storage(hass: Any) 
     flow.async_create_entry = Mock(return_value={"type": FlowResultType.CREATE_ENTRY})  # type: ignore[method-assign]
     result = await flow.async_step_complete()
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    # The closing advice is the Bluetooth one: the phone must leave the slot alone.
+    assert flow.async_create_entry.call_args.kwargs["description"] == "bluetooth"
     assert flow._entry_data is not None
     assert flow._entry_data[CONF_PAIRING_KEY_REF] == COMPANION_ID
     record = await PairingKeyStore(hass, COMPANION_ID).async_load_saber(APPLIANCE_ID)
@@ -539,8 +541,37 @@ async def test_saber_entry_falls_back_to_the_cloud_when_its_keys_cannot_be_saved
     ):
         result = await flow.async_step_complete()
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert "description" not in flow.async_create_entry.call_args.kwargs
     assert flow._entry_data is not None
     assert CONF_PAIRING_KEY_REF not in flow._entry_data
+
+
+@pytest.mark.parametrize(
+    ("source", "reason"),
+    [
+        (config_entries.SOURCE_REAUTH, "reauth_successful_bluetooth"),
+        (config_entries.SOURCE_RECONFIGURE, "reconfigure_successful_bluetooth"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_saber_repair_that_stores_keys_says_bluetooth_now_holds_the_hub(
+    hass: Any, source: str, reason: str
+) -> None:
+    flow = _complete_flow(
+        hass, source=source, entry_data={CONF_ADDRESS: ADDRESS, CONF_APPLIANCE_ID: APPLIANCE_ID}
+    )
+    flow._identity = CompanionIdentity(COMPANION_ID, "33" * 64)
+    flow._pairing_result = PairingResult(11, APPLIANCE_ID, appliance_public_key="44" * 64)
+    entry = SimpleNamespace(
+        entry_id="entry-id",
+        data={CONF_ADDRESS: ADDRESS, CONF_APPLIANCE_ID: APPLIANCE_ID},
+    )
+    flow._get_repair_entry = Mock(return_value=entry)  # type: ignore[method-assign]
+    flow.async_update_reload_and_abort = Mock(  # type: ignore[method-assign]
+        return_value={"type": FlowResultType.ABORT, "reason": reason}
+    )
+    await flow.async_step_complete()
+    assert flow.async_update_reload_and_abort.call_args.kwargs["reason"] == reason
 
 
 async def test_setup_uses_actual_crypto_gatt_driver_fake_cloud_and_private_store(hass: Any) -> None:

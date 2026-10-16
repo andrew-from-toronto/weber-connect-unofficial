@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_ADDRESS
 from homeassistant.core import HomeAssistant
 
+from .ble_session import WeberBluetoothSession
 from .const import (
     CONF_APPLIANCE_ID,
     CONF_CLOUD_PASSWORD,
@@ -142,4 +143,17 @@ async def async_get_config_entry_diagnostics(
             if coordinator.cloud_session is not None
             else None
         ),
+        "bluetooth": _bluetooth_diagnostics(coordinator.ble_session),
+    }
+
+
+def _bluetooth_diagnostics(session: WeberBluetoothSession | None) -> dict[str, Any] | None:
+    """Describe the local link without any value it carries."""
+
+    if session is None:
+        return None
+    return {
+        "connections": session.socket_connections,
+        "secure": session.is_secure,
+        "received_types": list(session.received_types),
     }

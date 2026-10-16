@@ -29,6 +29,7 @@ CONF_CAPABILITIES: Final = "device_capabilities"
 
 CONF_CONNECTION: Final = "connection"
 CONF_CONNECTION_MODE: Final = "connection_mode"
+CONF_USE_BLUETOOTH: Final = "use_bluetooth"
 CONF_PROBES: Final = "probes"
 CONF_PROBE_NAME_PREFIX: Final = "probe_name_"
 

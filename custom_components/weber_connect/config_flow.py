@@ -30,6 +30,7 @@ from .const import (
     CONF_CAPABILITIES,
     CONF_CLOUD_PASSWORD,
     CONF_COMPANION_ID,
+    CONF_CONNECTION,
     CONF_MANUFACTURER_ID,
     CONF_MANUFACTURER_SCHEMA,
     CONF_MESSAGE_VERSION,
@@ -38,6 +39,7 @@ from .const import (
     CONF_PROBE_NAME_PREFIX,
     CONF_PROBES,
     CONF_TRANSPORT_FAMILY,
+    CONF_USE_BLUETOOTH,
     DOMAIN,
     WEBER_COMPANY_IDS,
 )
@@ -110,6 +112,7 @@ class WeberConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._silabs_signing_keys: SiLabsSigningKeys | None = None
         self._cloud_config: CloudConfig | None = None
         self._pairing_result: PairingResult | None = None
+        self._saber_link = False
         self._pairing_failure_reason = "The pairing connection ended before setup finished."
         self._cloud_prepare_task: asyncio.Task[None] | None = None
         self._pairing_task: asyncio.Task[PairingResult] | None = None
@@ -918,15 +921,30 @@ class WeberConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not await self._async_save_pairing_keys():
                 return await self.async_step_setup_failed()
             previous_ref = entry.data.get(CONF_PAIRING_KEY_REF)
-            result = self.async_update_reload_and_abort(entry, data_updates=self._entry_data)
+            reason = (
+                "reauth_successful"
+                if self.source == config_entries.SOURCE_REAUTH
+                else "reconfigure_successful"
+            )
+            result = self.async_update_reload_and_abort(
+                entry,
+                data_updates=self._entry_data,
+                reason=f"{reason}_bluetooth" if self._saber_link else reason,
+            )
             if previous_ref and previous_ref != self._entry_data.get(CONF_PAIRING_KEY_REF):
                 try:
                     await PairingKeyStore(self.hass, previous_ref).async_remove()
                 except Exception:
-                    _LOGGER.warning("The retired SiLabs pairing record could not be removed.")
+                    _LOGGER.warning("The retired pairing record could not be removed.")
             return result
         if not await self._async_save_pairing_keys():
             return await self.async_step_setup_failed()
+        if self._saber_link:
+            # The usual closing advice hands Bluetooth back to the phone, which is
+            # wrong for an entry that now holds the hub's only Bluetooth slot.
+            return self.async_create_entry(
+                title=self._name, data=self._entry_data, description="bluetooth"
+            )
         return self.async_create_entry(title=self._name, data=self._entry_data)
 
     async def _async_save_pairing_keys(self) -> bool:
@@ -970,6 +988,7 @@ class WeberConnectConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return
         if self._entry_data is not None:
             self._entry_data[CONF_PAIRING_KEY_REF] = reference
+            self._saber_link = True
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> OptionsFlow:
@@ -982,12 +1001,34 @@ class OptionsFlow(config_entries.OptionsFlowWithReload):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         current = WeberOptions.from_mapping(self.config_entry.options).as_dict()
         probes = current[CONF_PROBES]
+        connection = current[CONF_CONNECTION]
         if user_input is not None:
             # Preserve names for temporarily absent or previously discovered slots.
             probes.update(user_input.get(CONF_PROBES, {}))
+            submitted = user_input.get(CONF_CONNECTION, {})
+            if CONF_USE_BLUETOOTH in submitted:
+                connection[CONF_USE_BLUETOOTH] = bool(submitted[CONF_USE_BLUETOOTH])
             return self.async_create_entry(title="", data=current)
 
         numbers = known_probe_numbers(self.hass, self.config_entry)
+        fields: dict[Any, Any] = {}
+        # The switch only exists for an entry that can actually use it; offered
+        # without the pairing secrets it would be a control that does nothing.
+        data = self.config_entry.data
+        if (
+            data.get(CONF_PAIRING_KEY_REF)
+            and data.get(CONF_TRANSPORT_FAMILY, TransportFamily.SABER) == TransportFamily.SABER
+        ):
+            fields[vol.Required(CONF_CONNECTION)] = section(
+                vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_USE_BLUETOOTH, default=connection[CONF_USE_BLUETOOTH]
+                        ): bool,
+                    }
+                ),
+                {"collapsed": False},
+            )
         return self.async_show_form(
             step_id="init",
             description_placeholders=report_placeholders(
@@ -995,6 +1036,7 @@ class OptionsFlow(config_entries.OptionsFlowWithReload):
             ),
             data_schema=vol.Schema(
                 {
+                    **fields,
                     vol.Required(CONF_PROBES): section(
                         vol.Schema(
                             {

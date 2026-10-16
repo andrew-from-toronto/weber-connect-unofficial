@@ -2,10 +2,12 @@
 
 ## Status
 
-Implemented, and unverified against hardware. The session construction
-(`josl_session.py`), the local read transport (`ble_session.py`), private
-storage of the session keys and the coordinator wiring are all in place and
-covered by tests. No part of it has yet exchanged a frame with a real appliance.
+Implemented. The session construction (`josl_session.py`), the local read
+transport (`ble_session.py`), private storage of the session keys and the
+coordinator wiring are all in place and covered by tests. The read path was
+first exercised against a SmokeFire EX4 on 2026-09-27: the handshake was
+accepted and encrypted status fetches answered. That run kept the keys in the
+config entry; the private-store wiring has not yet been run on hardware.
 
 ## Context
 

@@ -90,13 +90,19 @@ class WeberCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._transport = PortableSession(
                 hass, str(entry.data[CONF_ADDRESS]), int(entry.data[CONF_MODEL_ID])
             )
-        elif saber_session is not None and entry.data.get(CONF_ADDRESS):
+        elif (
+            saber_session is not None
+            and entry.data.get(CONF_ADDRESS)
+            and self.options.use_bluetooth
+        ):
             # A Saber entry paired before local reads existed never stored the
             # session keys, and the appliance offers its half only during
             # pairing - so the transport is chosen by what the entry actually
             # holds rather than by an option a user could set without the
             # secrets behind it. Re-pairing is what opts an appliance in, and it
             # costs the phone app its Bluetooth slot: an appliance accepts one owner.
+            # The one option is a way *back*: it keeps the secrets and reads the
+            # cloud, so abandoning the local link never needs the entry deleted.
             self.source = "bluetooth"
             self.ble_session = WeberBluetoothSession(
                 hass,

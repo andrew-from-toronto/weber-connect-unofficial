@@ -443,7 +443,8 @@ async def test_fetch_skips_replies_it_did_not_ask_for() -> None:
     )
     status = await session._async_fetch(client)
     assert status is not None
-    assert "probe_count" not in status
+    # The unrequested frame's probe count of 2 is not merged into the status.
+    assert status["probe_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -561,3 +562,14 @@ def test_coordinator_selects_bluetooth_only_with_stored_session_material() -> No
         )
         assert no_address.source == "cloud"
         assert no_address.ble_session is None
+
+        # The option is a way back to the cloud that keeps the secrets.
+        declined = _entry()
+        declined.options = {"connection": {"use_bluetooth": False}}
+        fallback = coordinator_module.WeberCoordinator(
+            hass,
+            declined,  # type: ignore[arg-type]
+            saber_session=stored,
+        )
+        assert fallback.source == "cloud"
+        assert fallback.ble_session is None
